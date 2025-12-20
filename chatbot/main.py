@@ -6,9 +6,13 @@ from chat.loop import run_chat
 
 def menu_auth() -> str:
     while True:
-        print("1) Login")
-        print("2) Register")
-        choice = input("> ").strip()
+        try:
+            print("1) Login")
+            print("2) Register")
+            choice = input("> ").strip()
+        except KeyboardInterrupt:
+            print("\nExiting.\n")
+            raise SystemExit(0)
 
         if choice == "1":
             user_id = login_flow()
@@ -21,11 +25,15 @@ def menu_auth() -> str:
 
 def menu_sessions(user_id: str) -> tuple[str, bool]:
     while True:
-        print("1) New chat")
-        print("2) Resume previous chat")
-        print("3) Delete a chat")
-        print("4) Delete all chats")
-        choice = input("> ").strip()
+        try:
+            print("1) New chat")
+            print("2) Resume previous chat")
+            print("3) Delete a chat")
+            print("4) Delete all chats")
+            choice = input("> ").strip()
+        except KeyboardInterrupt:
+            print("\nExiting.\n")
+            raise SystemExit(0)
 
         if choice == "1":
             return create_session(user_id), False
@@ -41,7 +49,11 @@ def menu_sessions(user_id: str) -> tuple[str, bool]:
                 title_text = title or "Untitled chat"
                 print(f"{i}) {title_text}  ({sid})")
 
-            pick = input("> ").strip()
+            try:
+                pick = input("> ").strip()
+            except KeyboardInterrupt:
+                print("\nCanceled.\n")
+                continue
             if pick.isdigit():
                 idx = int(pick) - 1
                 if 0 <= idx < len(sessions):
@@ -61,11 +73,19 @@ def menu_sessions(user_id: str) -> tuple[str, bool]:
                 title_text = title or "Untitled chat"
                 print(f"{i}) {title_text}  ({sid})")
 
-            pick = input("> ").strip()
+            try:
+                pick = input("> ").strip()
+            except KeyboardInterrupt:
+                print("\nCanceled.\n")
+                continue
             if pick.isdigit():
                 idx = int(pick) - 1
                 if 0 <= idx < len(sessions):
-                    confirm = input("Delete this chat? (y/N) ").strip().lower()
+                    try:
+                        confirm = input("Delete this chat? (y/N) ").strip().lower()
+                    except KeyboardInterrupt:
+                        print("\nCanceled.\n")
+                        continue
                     if confirm == "y":
                         delete_session(sessions[idx][0])
                         print("Chat deleted.\n")
@@ -77,7 +97,11 @@ def menu_sessions(user_id: str) -> tuple[str, bool]:
             continue
 
         if choice == "4":
-            confirm = input("Delete ALL chats? (y/N) ").strip().lower()
+            try:
+                confirm = input("Delete ALL chats? (y/N) ").strip().lower()
+            except KeyboardInterrupt:
+                print("\nCanceled.\n")
+                continue
             if confirm == "y":
                 delete_all_sessions(user_id)
                 print("All chats deleted.\n")
@@ -95,8 +119,29 @@ def _format_user_context(user_profile: dict[str, str | int] | None) -> str:
     age = user_profile.get("age", "unknown")
     return f"Name: {name}; Nickname: {nickname}; Age: {age}"
 
+def _print_banner() -> None:
+    banner = r"""
+  ____ _           _           _           _
+ / ___| |__   __ _| |_ ___  __| | ___  ___| |_
+| |   | '_ \ / _` | __/ _ \/ _` |/ _ \/ __| __|
+| |___| | | | (_| | ||  __/ (_| |  __/\__ \ |_
+ \____|_| |_|\__,_|\__\___|\__,_|\___||___/\__|
+    """
+    print(banner)
+
+def _init_readline() -> None:
+    try:
+        import readline
+    except Exception:
+        return
+    if hasattr(readline, "set_auto_history"):
+        readline.set_auto_history(False)
+    readline.set_history_length(0)
+
 def main():
     run_schema()
+    _init_readline()
+    _print_banner()
     user_id = menu_auth()
     user_profile = get_user_profile(user_id)
     user_context = _format_user_context(user_profile)
