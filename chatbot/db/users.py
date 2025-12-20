@@ -41,3 +41,20 @@ def user_exists(nickname: str) -> bool:
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM users WHERE nickname=%s", (nickname,))
             return cur.fetchone() is not None
+
+def get_user_profile(user_id: str) -> dict[str, str | int] | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT name, nickname, age
+                FROM users
+                WHERE id = %s
+                """,
+                (user_id,),
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    name, nickname, age = row
+    return {"name": name, "nickname": nickname, "age": age}

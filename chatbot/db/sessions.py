@@ -16,22 +16,15 @@ def create_session(user_id: str) -> str:
         conn.commit()
     return session_id
 
-def list_sessions(user_id: str) -> list[tuple[str, str, str, str | None]]:
+def list_sessions(user_id: str) -> list[tuple[str, str | None]]:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT cs.id, cs.created_at, cs.last_active, lm.role, lm.content
-                FROM chat_sessions cs
-                LEFT JOIN LATERAL (
-                    SELECT role, content
-                    FROM messages
-                    WHERE session_id = cs.id
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                ) lm ON true
-                WHERE cs.user_id = %s
-                ORDER BY cs.last_active DESC
+                SELECT id, title
+                FROM chat_sessions
+                WHERE user_id = %s
+                ORDER BY last_active DESC
                 """,
                 (user_id,),
             )
@@ -39,16 +32,24 @@ def list_sessions(user_id: str) -> list[tuple[str, str, str, str | None]]:
     result = []
     for row in rows:
         session_id = str(row[0])
-        created_at = row[1].isoformat(sep=" ", timespec="seconds")
-        last_active = row[2].isoformat(sep=" ", timespec="seconds")
-        role = row[3]
-        content = row[4]
-        if role and content:
-            preview = f"{role}: {content}"
-        else:
-            preview = None
-        result.append((session_id, created_at, last_active, preview))
+        title = row[1]
+        result.append((session_id, title))
     return result
+
+def set_session_title(session_id: str, title: str) -> None:
+    if not title:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE chat_sessions
+                SET title = %s
+                WHERE id = %s AND title IS NULL
+                """,
+                (title, session_id),
+            )
+        conn.commit()
 
 def touch_session(session_id: str) -> None:
     with get_conn() as conn:
@@ -56,5 +57,23 @@ def touch_session(session_id: str) -> None:
             cur.execute(
                 "UPDATE chat_sessions SET last_active = now() WHERE id = %s",
                 (session_id,),
+            )
+        conn.commit()
+
+def delete_session(session_id: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM chat_sessions WHERE id = %s",
+                (session_id,),
+            )
+        conn.commit()
+
+def delete_all_sessions(user_id: str) -> None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM chat_sessions WHERE user_id = %s",
+                (user_id,),
             )
         conn.commit()

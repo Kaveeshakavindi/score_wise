@@ -12,9 +12,12 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id UUID PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT,
     created_at TIMESTAMP DEFAULT now(),
     last_active TIMESTAMP DEFAULT now()
 );
+
+ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS title TEXT;
 
 CREATE TABLE IF NOT EXISTS messages (
     id UUID PRIMARY KEY,
