@@ -4,11 +4,25 @@ import os
 from dataclasses import dataclass
 from typing import Iterable
 
-from langchain_openai import OpenAIEmbeddings
+from sentence_transformers import SentenceTransformer
 
 _ACTIVE_SESSION_ID: str | None = None
 _STORE: dict[str, list["Chunk"]] = {}
-_EMBEDDER: OpenAIEmbeddings | None = None
+_EMBEDDER: "LocalEmbedder | None" = None
+
+
+class LocalEmbedder:
+    """Wraps a local sentence-transformers model behind the embed_documents/embed_query
+    interface the rest of this module expects (mirrors langchain's Embeddings shape)."""
+
+    def __init__(self, model_name: str) -> None:
+        self._model = SentenceTransformer(model_name)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [vec.tolist() for vec in self._model.encode(texts)]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._model.encode(text).tolist()
 
 
 @dataclass(frozen=True)
@@ -49,18 +63,11 @@ def retrieve(query: str, k: int = 4) -> list[str]:
     return [c.text for c, _ in scored[:k]]
 
 
-def _get_embedder() -> OpenAIEmbeddings:
+def _get_embedder() -> LocalEmbedder:
     global _EMBEDDER
     if _EMBEDDER is None:
-        model = os.environ.get("LMSTUDIO_EMBEDDING_MODEL") or os.environ.get("LMSTUDIO_MODEL")
-        base_url = os.environ.get("LMSTUDIO_BASE_URL")
-        if not model or not base_url:
-            raise RuntimeError("Missing LMSTUDIO_EMBEDDING_MODEL or LMSTUDIO_BASE_URL")
-        _EMBEDDER = OpenAIEmbeddings(
-            model=model,
-            base_url=base_url,
-            api_key="lm_studio",
-        )
+        model = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        _EMBEDDER = LocalEmbedder(model)
     return _EMBEDDER
 
 

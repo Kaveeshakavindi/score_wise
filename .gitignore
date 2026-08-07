@@ -136,6 +136,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Locally vendored wheels (workaround for flaky large downloads)
+.vendor/
+
 # Spyder project settings
 .spyderproject
 .spyproject

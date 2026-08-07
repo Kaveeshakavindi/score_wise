@@ -1,6 +1,6 @@
 import re
 from langchain_core.messages import SystemMessage, HumanMessage
-from llm.client import get_llm
+from llm.client import get_llm, get_text_content
 
 def generate_session_title(user_input: str, assistant_output: str) -> str:
     system_text = (
@@ -13,7 +13,7 @@ def generate_session_title(user_input: str, assistant_output: str) -> str:
     try:
         llm = get_llm()
         response = llm.invoke([SystemMessage(content=system_text), HumanMessage(content=human_text)])
-        candidate = _sanitize_title(response.content)
+        candidate = _sanitize_title(get_text_content(response))
     except Exception:
         candidate = ""
 

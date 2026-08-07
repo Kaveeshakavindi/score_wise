@@ -1,11 +1,12 @@
 import sys
 from chat.chain import build_prompt, get_llm_with_tools
+from llm.client import get_text_content
 from chat.rag import retrieve, set_active_session
 from chat.tools import get_tools
 from chat.title import generate_session_title
 from db.messages import load_history, save_message, load_last_exchange
 from db.sessions import touch_session, set_session_title
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 
 def run_chat(session_id: str, user_context: str, show_last: bool = False) -> None:
     prompt = build_prompt(user_context)
@@ -42,10 +43,15 @@ def run_chat(session_id: str, user_context: str, show_last: bool = False) -> Non
                 if tool_used_index:
                     context_text = _build_context(user_input)
                     if context_text:
-                        messages.append(SystemMessage(content=f"Relevant context (if any):\n{context_text}"))
+                        # Anthropic only allows system messages at the very start of a
+                        # conversation, so mid-loop context is injected as a labeled
+                        # human-turn block instead of a SystemMessage.
+                        messages.append(HumanMessage(
+                            content=f"<system-reminder>Relevant context (if any):\n{context_text}</system-reminder>"
+                        ))
                 response = llm.invoke(messages)
 
-            response_text = getattr(response, "content", "").strip()
+            response_text = get_text_content(response).strip()
             _print_in_chunks(response_text)
 
             save_message(session_id, "user", user_input)

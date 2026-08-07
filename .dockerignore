@@ -1,0 +1,36 @@
+# Keeps the build context small and prevents host-only artifacts (a macOS
+# venv, git history, vendored macOS wheels, secrets) from leaking into the
+# image or colliding with what the container builds for itself.
+
+.git/
+.github/
+
+# Local virtual environments — a host-built venv here would collide with (and
+# get silently "fixed" by uv rebuilding on top of) the one built inside the
+# container, wasting the whole point of the multi-stage build.
+.venv/
+venv/
+env/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Only needed for local dev on macOS (see pyproject.toml's darwin-scoped
+# uv.sources); the Linux build resolves torch/scipy from PyPI instead.
+.vendor/
+
+# Never bake real secrets into an image layer.
+.env
+.env.*
+!.env.example
+
+.claude/
+tests/
+*.md
+docker-compose.yml
