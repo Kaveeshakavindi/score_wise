@@ -1,4 +1,4 @@
-# Custom Chatbot — FastAPI Backend Specification
+# ScoreWise — FastAPI Backend Specification
 
 **Status:** Blueprint / not yet implemented
 **Target:** Convert the existing CLI chatbot (`chatbot/`) into a stateless, multi-user FastAPI backend exposing every current capability over REST + WebSocket.
