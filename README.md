@@ -1,6 +1,6 @@
 # Custom Chatbot
 
-A personal CLI chatbot built to experiment with LangChain, tool calling, and a PostgreSQL-backed chat history with session titles. It supports user accounts, streaming responses, file/URL reading, and a minimal in-memory RAG workflow.
+A personal CLI chatbot built to experiment with LangChain, tool calling, and a PostgreSQL-backed chat history with session titles. It supports user accounts, streaming responses, file/URL reading, and a minimal in-memory RAG workflow. Chat and title generation run on the Anthropic API (Claude); RAG retrieval uses a local sentence-transformers embedding model, since Anthropic doesn't offer an embeddings endpoint.
 
 ## Purpose
 
@@ -34,10 +34,14 @@ Create a `.env` file in the project root with:
 
 ```
 DATABASE_URL=postgresql://user@localhost:5432/...
-LMSTUDIO_BASE_URL=http://localhost:1234/v1
-LMSTUDIO_MODEL=qwen2.5-7b-instruct # thats a model I use
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-sonnet-5
+EMBEDDING_MODEL=all-MiniLM-L6-v2
 ```
 
 Notes:
-- `LMSTUDIO_EMBEDDING_MODEL` falls back to `LMSTUDIO_MODEL` if not set.
+- `ANTHROPIC_API_KEY` is required — get one from the Anthropic Console.
+- `ANTHROPIC_MODEL` defaults to `claude-sonnet-5` if not set.
+- `EMBEDDING_MODEL` is a local sentence-transformers model name (downloaded on first use, no API key needed) used for the in-memory RAG feature; defaults to `all-MiniLM-L6-v2`.
 - The DB schema is created automatically on startup.
+# score_wise
