@@ -45,3 +45,4 @@ Notes:
 - `EMBEDDING_MODEL` is a local sentence-transformers model name (downloaded on first use, no API key needed) used for the in-memory RAG feature; defaults to `all-MiniLM-L6-v2`.
 - The DB schema is created automatically on startup.
 # score_wise
+# score_wise
