@@ -18,16 +18,25 @@ from app.db.base import get_db_session
 from app.db.models import User
 from app.repositories.message_repository import MessageRepository
 from app.repositories.rag_chunk_repository import RagChunkRepository
+from app.repositories.attempt_repository import AttemptRepository
+from app.repositories.paper_repository import PaperRepository
+from app.repositories.question_repository import QuestionRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.session_repository import SessionRepository
+from app.repositories.syllabus_document_repository import SyllabusDocumentRepository
 from app.repositories.tool_invocation_repository import ToolInvocationRepository
+from app.repositories.tutor_message_repository import TutorMessageRepository
 from app.repositories.user_repository import UserRepository
+from app.services.attempt_service import AttemptService
 from app.services.auth_service import AuthService
 from app.services.chat_service import ChatService
+from app.services.paper_service import PaperService
 from app.services.rag_service import RagService
 from app.services.session_service import SessionService
+from app.services.syllabus_ingestion_service import SyllabusIngestionService
 from app.services.title_service import TitleService
 from app.services.tool_service import ToolService
+from app.services.tutor_rag_service import TutorRagService
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login", auto_error=False)
 
@@ -86,6 +95,29 @@ def get_tool_invocation_repository(db: DbSession) -> ToolInvocationRepository:
     return ToolInvocationRepository(db)
 
 
+# --- Repositories: ScoreWise ---
+
+
+def get_paper_repository(db: DbSession) -> PaperRepository:
+    return PaperRepository(db)
+
+
+def get_question_repository(db: DbSession) -> QuestionRepository:
+    return QuestionRepository(db)
+
+
+def get_syllabus_document_repository(db: DbSession) -> SyllabusDocumentRepository:
+    return SyllabusDocumentRepository(db)
+
+
+def get_attempt_repository(db: DbSession) -> AttemptRepository:
+    return AttemptRepository(db)
+
+
+def get_tutor_message_repository(db: DbSession) -> TutorMessageRepository:
+    return TutorMessageRepository(db)
+
+
 # --- Services ---
 
 
@@ -131,6 +163,40 @@ def get_chat_service(
     settings: SettingsDep,
 ) -> ChatService:
     return ChatService(message_repo, session_repo, rag_service, tool_service, title_service, settings)
+
+
+# --- Services: ScoreWise ---
+
+
+def get_paper_service(
+    paper_repo: Annotated[PaperRepository, Depends(get_paper_repository)],
+    question_repo: Annotated[QuestionRepository, Depends(get_question_repository)],
+) -> PaperService:
+    return PaperService(paper_repo, question_repo)
+
+
+def get_attempt_service(
+    attempt_repo: Annotated[AttemptRepository, Depends(get_attempt_repository)],
+    paper_repo: Annotated[PaperRepository, Depends(get_paper_repository)],
+    question_repo: Annotated[QuestionRepository, Depends(get_question_repository)],
+) -> AttemptService:
+    return AttemptService(attempt_repo, paper_repo, question_repo)
+
+
+def get_syllabus_ingestion_service(
+    syllabus_document_repo: Annotated[SyllabusDocumentRepository, Depends(get_syllabus_document_repository)],
+    settings: SettingsDep,
+) -> SyllabusIngestionService:
+    return SyllabusIngestionService(syllabus_document_repo, settings)
+
+
+def get_tutor_rag_service(
+    question_repo: Annotated[QuestionRepository, Depends(get_question_repository)],
+    tutor_message_repo: Annotated[TutorMessageRepository, Depends(get_tutor_message_repository)],
+    syllabus_document_repo: Annotated[SyllabusDocumentRepository, Depends(get_syllabus_document_repository)],
+    settings: SettingsDep,
+) -> TutorRagService:
+    return TutorRagService(question_repo, tutor_message_repo, syllabus_document_repo, settings)
 
 
 # --- Auth ---

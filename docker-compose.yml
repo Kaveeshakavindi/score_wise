@@ -1,5 +1,8 @@
 # Local/dev stack (§14): api + postgres (pgvector required, unlike the plain
-# postgres:16 image the CLI app uses) + redis (rate limiting).
+# postgres:16 image the CLI app uses) + redis (rate limiting) + chromadb
+# (ScoreWise syllabus vector store — a standalone service, not an embedded
+# on-disk client, so all 4 gunicorn workers share one store instead of
+# racing on a local SQLite file).
 
 services:
   postgres:
@@ -28,6 +31,13 @@ services:
       timeout: 5s
       retries: 10
 
+  chromadb:
+    image: chromadb/chroma:latest
+    ports:
+      - "8001:8000"
+    volumes:
+      - chromadata:/chroma/chroma
+
   migrate:
     build: .
     command: ["alembic", "upgrade", "head"]
@@ -46,13 +56,18 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://chatbot:chatbot@postgres:5432/chatbot
       REDIS_URL: redis://redis:6379/0
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      chromadb:
+        condition: service_started
       migrate:
         condition: service_completed_successfully
 
 volumes:
   pgdata:
+  chromadata:

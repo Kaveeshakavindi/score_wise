@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design system tokens (design.md §2) — stored as "R G B" triplets (not hex)
+   so Tailwind's opacity modifiers (bg-coral/15, hover:bg-sage/40, ...) work
+   via the rgb(var(--x) / <alpha-value>) pattern in tailwind.config.ts.
+
+   Dark mode: design.md defines no dark variant, and a half-applied dark
+   theme is worse than none — every card/border/text color below would need
+   its own considered dark counterpart to stay consistent. Rather than ship
+   that half-applied, `prefers-color-scheme: dark` is intentionally not
+   handled at all; `color-scheme: light` also tells the browser chrome
+   (scrollbars, form controls) to stay light instead of guessing. */
+:root {
+  --bg-base: 253 252 248; /* #FDFCF8 */
+  --text-dark: 41 37 36; /* #292524 */
+  --text-muted: 120 113 108; /* #78716C */
+  --sage: 232 239 232; /* #E8EFE8 */
+  --lavender: 239 237 244; /* #EFEDF4 */
+  --coral: 255 183 178; /* #FFB7B2 */
+  /* Not a design.md token — design.md only defines the pastel --coral.
+     A ~18% darker, more saturated reading of the same hue, hand-picked (not
+     formally contrast-audited) so white button text stays legible on it.
+     Used exactly once: the Test screen's Submit button (§3 of the brief). */
+  --coral-dark: 224 106 92; /* #E06A5C */
+  --blob-pink: 255 228 225; /* #FFE4E1 */
+  --blob-lavender: 230 230 250; /* #E6E6FA */
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: rgb(var(--bg-base));
+  color: rgb(var(--text-dark));
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

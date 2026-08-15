@@ -5,7 +5,19 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.core.exceptions import NotFoundError
-from app.db.models import ChatSession, Message, RagDocument, RefreshToken, User
+from app.db.models import (
+    Attempt,
+    AttemptAnswer,
+    ChatSession,
+    Message,
+    Paper,
+    Question,
+    RagDocument,
+    RefreshToken,
+    SyllabusDocument,
+    TutorMessage,
+    User,
+)
 
 
 class FakeUserRepository:
@@ -252,6 +264,156 @@ class FakeToolInvocationRepository:
                 "error_message": error_message,
             }
         )
+
+
+class FakePaperRepository:
+    def __init__(self) -> None:
+        self._by_id: dict[uuid.UUID, Paper] = {}
+
+    async def create(self, subject: str, year: int) -> Paper:
+        paper = Paper(id=uuid.uuid4(), subject=subject, year=year)
+        paper.created_at = datetime.now(timezone.utc)
+        self._by_id[paper.id] = paper
+        return paper
+
+    async def list_by_subject(self, subject: str | None, *, limit: int, offset: int) -> list[Paper]:
+        items = sorted(
+            (p for p in self._by_id.values() if subject is None or p.subject == subject),
+            key=lambda p: p.year,
+            reverse=True,
+        )
+        return items[offset : offset + limit]
+
+    async def count_by_subject(self, subject: str | None) -> int:
+        return sum(1 for p in self._by_id.values() if subject is None or p.subject == subject)
+
+    async def get_by_id(self, paper_id: uuid.UUID) -> Paper | None:
+        return self._by_id.get(paper_id)
+
+
+class FakeQuestionRepository:
+    def __init__(self) -> None:
+        self._by_id: dict[uuid.UUID, Question] = {}
+
+    async def create(
+        self,
+        paper_id: uuid.UUID,
+        *,
+        subject: str,
+        year: int,
+        question_number: int,
+        question_text: str,
+        options: dict[str, str],
+        correct_answer: int,
+    ) -> Question:
+        question = Question(
+            id=uuid.uuid4(),
+            paper_id=paper_id,
+            subject=subject,
+            year=year,
+            question_number=question_number,
+            question_text=question_text,
+            options=options,
+            correct_answer=correct_answer,
+        )
+        question.created_at = datetime.now(timezone.utc)
+        self._by_id[question.id] = question
+        return question
+
+    async def list_by_paper(self, paper_id: uuid.UUID, *, limit: int, offset: int) -> list[Question]:
+        items = sorted(
+            (q for q in self._by_id.values() if q.paper_id == paper_id), key=lambda q: q.question_number
+        )
+        return items[offset : offset + limit]
+
+    async def count_by_paper(self, paper_id: uuid.UUID) -> int:
+        return sum(1 for q in self._by_id.values() if q.paper_id == paper_id)
+
+    async def get_by_id(self, question_id: uuid.UUID) -> Question | None:
+        return self._by_id.get(question_id)
+
+    async def get_many_by_ids(self, question_ids: list[uuid.UUID]) -> dict[uuid.UUID, Question]:
+        return {qid: self._by_id[qid] for qid in question_ids if qid in self._by_id}
+
+
+class FakeSyllabusDocumentRepository:
+    def __init__(self) -> None:
+        self._by_id: dict[uuid.UUID, SyllabusDocument] = {}
+
+    async def create(
+        self, *, document_id: uuid.UUID | None, filename: str, subject: str, topic: str | None, chunk_count: int
+    ) -> SyllabusDocument:
+        document = SyllabusDocument(
+            id=document_id or uuid.uuid4(), filename=filename, subject=subject, topic=topic, chunk_count=chunk_count
+        )
+        document.uploaded_at = datetime.now(timezone.utc)
+        self._by_id[document.id] = document
+        return document
+
+    async def list_all(self, *, limit: int, offset: int) -> list[SyllabusDocument]:
+        items = sorted(self._by_id.values(), key=lambda d: d.uploaded_at, reverse=True)
+        return items[offset : offset + limit]
+
+    async def count_all(self) -> int:
+        return len(self._by_id)
+
+    async def get_by_id(self, document_id: uuid.UUID) -> SyllabusDocument | None:
+        return self._by_id.get(document_id)
+
+    async def get_many_by_ids(self, document_ids: list[uuid.UUID]) -> dict[uuid.UUID, SyllabusDocument]:
+        return {did: self._by_id[did] for did in document_ids if did in self._by_id}
+
+    async def delete(self, document_id: uuid.UUID) -> None:
+        self._by_id.pop(document_id, None)
+
+
+class FakeAttemptRepository:
+    def __init__(self) -> None:
+        self.attempts: dict[uuid.UUID, Attempt] = {}
+        self.answers: list[AttemptAnswer] = []
+
+    async def create(self, *, user_id: uuid.UUID, paper_id: uuid.UUID, score: int, total: int) -> Attempt:
+        attempt = Attempt(id=uuid.uuid4(), user_id=user_id, paper_id=paper_id, score=score, total=total)
+        attempt.created_at = datetime.now(timezone.utc)
+        self.attempts[attempt.id] = attempt
+        return attempt
+
+    async def add_answer(
+        self, *, attempt_id: uuid.UUID, question_id: uuid.UUID, selected_answer: int | None, is_correct: bool
+    ) -> AttemptAnswer:
+        answer = AttemptAnswer(
+            id=uuid.uuid4(),
+            attempt_id=attempt_id,
+            question_id=question_id,
+            selected_answer=selected_answer,
+            is_correct=is_correct,
+        )
+        self.answers.append(answer)
+        return answer
+
+
+class FakeTutorMessageRepository:
+    def __init__(self) -> None:
+        self._by_key: dict[tuple[uuid.UUID, uuid.UUID], list[TutorMessage]] = {}
+
+    async def create(
+        self,
+        *,
+        question_id: uuid.UUID,
+        user_id: uuid.UUID,
+        role: str,
+        content: str,
+        citations: list[dict] | None = None,
+    ) -> TutorMessage:
+        message = TutorMessage(
+            id=uuid.uuid4(), question_id=question_id, user_id=user_id, role=role, content=content, citations=citations
+        )
+        message.created_at = datetime.now(timezone.utc)
+        self._by_key.setdefault((question_id, user_id), []).append(message)
+        return message
+
+    async def history(self, *, question_id: uuid.UUID, user_id: uuid.UUID) -> list[TutorMessage]:
+        return list(self._by_key.get((question_id, user_id), []))
 
 
 class FakeRedis:

@@ -41,6 +41,17 @@ class Settings(BaseSettings):
     max_ingest_bytes: int = Field(2_000_000, alias="MAX_INGEST_BYTES")
     daily_token_budget: int | None = Field(None, alias="DAILY_TOKEN_BUDGET")
 
+    # --- ScoreWise: syllabus vector store (ChromaDB) ---
+    # Defaults target the host-mapped port docker-compose.yml exposes, for
+    # running the API process directly on the host against a dockerized
+    # chroma/postgres/redis (mirrors how DATABASE_URL's local default targets
+    # localhost:5432). Docker-compose overrides both to the `chromadb`
+    # service's container-internal address for the containerized api/migrate
+    # services, same pattern as DATABASE_URL/REDIS_URL.
+    chroma_host: str = Field("localhost", alias="CHROMA_HOST")
+    chroma_port: int = Field(8001, alias="CHROMA_PORT")
+    max_syllabus_upload_bytes: int = Field(20 * 1024 * 1024, alias="MAX_SYLLABUS_UPLOAD_BYTES")
+
     # --- Observability ---
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

@@ -11,7 +11,19 @@ from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging, logger
 from app.core.middleware import RequestIDMiddleware, SecureHeadersMiddleware, TimingMiddleware
 from app.db.base import dispose_engine, init_engine
-from app.routers import auth, documents, health, messages, sessions, tools, ws_chat
+from app.routers import (
+    admin_documents,
+    attempts,
+    auth,
+    documents,
+    health,
+    messages,
+    papers,
+    sessions,
+    tools,
+    tutor,
+    ws_chat,
+)
 
 
 @asynccontextmanager
@@ -66,6 +78,13 @@ def create_app() -> FastAPI:
     app.include_router(documents.router)
     app.include_router(tools.router)
     app.include_router(ws_chat.router)
+
+    # ScoreWise: GCE A/L past-paper practice tool, additive alongside the
+    # generic chatbot routers above.
+    app.include_router(papers.router)
+    app.include_router(attempts.router)
+    app.include_router(tutor.router)
+    app.include_router(admin_documents.router)
 
     return app
 

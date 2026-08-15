@@ -63,6 +63,11 @@ class PayloadTooLargeError(AppError):
     code = "payload_too_large"
 
 
+class UnsupportedMediaTypeError(AppError):
+    status_code = status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+    code = "unsupported_media_type"
+
+
 class UpstreamError(AppError):
     status_code = status.HTTP_502_BAD_GATEWAY
     code = "llm_upstream_error"
@@ -98,9 +103,20 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Pydantic embeds the raw exception that triggered a coercion failure
+        # (e.g. a ValueError from `UUID("")`) in errors()[i]["ctx"]["error"].
+        # That's not JSON-serializable, so it must be stringified before it
+        # can go into the response body.
+        errors = []
+        for error in exc.errors():
+            error = dict(error)
+            ctx = error.get("ctx")
+            if ctx and "error" in ctx:
+                error["ctx"] = {**ctx, "error": str(ctx["error"])}
+            errors.append(error)
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content=_envelope("validation_error", "Request validation failed.", {"errors": exc.errors()}),
+            content=_envelope("validation_error", "Request validation failed.", {"errors": errors}),
         )
 
     @app.exception_handler(anthropic.APITimeoutError)

@@ -1,6 +1,6 @@
 # Software Requirements
 
-Everything needed to build, run, and deploy the backend — the legacy CLI core (`chatbot/`) and the FastAPI API layer (`app/`, per `api.md`). Versions are pulled verbatim from `pyproject.toml`/`uv.lock`/`requirments.txt`/`docker-compose.yml`; nothing pinned here is guessed.
+Everything needed to build, run, and deploy the backend — the legacy CLI core (`chatbot/`), the generic FastAPI API layer (`app/`, per `api.md`), and ScoreWise, the GCE A/L past-paper practice tool built on top of it (papers/questions/attempts + a question-scoped AI tutor RAG pipeline). Versions are pulled verbatim from `pyproject.toml`/`uv.lock`/`requirments.txt`/`docker-compose.yml`; nothing pinned here is guessed.
 
 ## Language / Runtime
 
@@ -30,6 +30,20 @@ Everything needed to build, run, and deploy the backend — the legacy CLI core 
 | Async driver | asyncpg | 0.30.0 | Async Postgres driver under SQLAlchemy's async engine | Required |
 | Vector column type | pgvector (Python package) | 0.3.6 | `Vector(384)` SQLAlchemy column type for `rag_chunks.embedding` | Required |
 | Sync driver | psycopg (`[binary]`) | 3.2.3 | Used only by the legacy CLI (`chatbot/db/conn.py`) | Required (CLI only) |
+
+## Vector Store (ScoreWise Syllabus RAG)
+
+| Component | Name/Tool | Version (if pinned) | Purpose | Required/Optional |
+|---|---|---|---|---|
+| Vector database | ChromaDB (server) | `chromadb/chroma:latest` image (`docker-compose.yml`) | Stores syllabus chunk embeddings, filtered by subject at query time (`app/vectorstore/chroma_client.py`) — deliberately a standalone service, not an embedded on-disk client, so Gunicorn's 4 worker processes don't race on one local store | Required (ScoreWise tutor) |
+| Python client | chromadb | 1.5.9 | `HttpClient` used by `app/vectorstore/chroma_client.py`; pulls in grpcio/onnxruntime/opentelemetry as transitive deps (unused by this app — Chroma's own default embedding function is bypassed since embeddings are supplied directly) | Required (ScoreWise tutor) |
+| ONNX runtime | onnxruntime | `<1.24` (explicitly capped) | Transitive dep of chromadb; capped because `1.24+` ships no `cp310` wheel, which would break local macOS dev | Required (transitive) |
+
+## Document Processing (ScoreWise Syllabus Ingestion)
+
+| Component | Name/Tool | Version (if pinned) | Purpose | Required/Optional |
+|---|---|---|---|---|
+| PDF text extraction | pypdf | 6.15.0 | Extracts raw text from uploaded syllabus PDFs (`app/services/pdf_extraction.py`), `POST /api/v1/admin/documents` | Required (ScoreWise admin upload) |
 
 ## Caching / Rate Limiting
 
@@ -102,7 +116,7 @@ Everything needed to build, run, and deploy the backend — the legacy CLI core 
 | Component | Name/Tool | Version (if pinned) | Purpose | Required/Optional |
 |---|---|---|---|---|
 | Container runtime | Docker | Host-installed, unpinned | Builds/runs the multi-stage image (`Dockerfile`) | Required |
-| Local orchestration | Docker Compose | Host-installed, unpinned | Runs `api` + `postgres` + `redis` + `migrate` together (`docker-compose.yml`) | Required (local/dev) |
+| Local orchestration | Docker Compose | Host-installed, unpinned | Runs `api` + `postgres` + `redis` + `chromadb` + `migrate` together (`docker-compose.yml`) | Required (local/dev) |
 | Base image | `python:3.10-slim` | 3.10-slim (Debian) | Build and runtime stage base, matched to `.python-version` | Required |
 | Process manager (prod) | Gunicorn (see Web Framework table) | 23.0.0 | Container's `CMD` | Required |
 
@@ -132,6 +146,9 @@ Reference: api.md §10 / `app/core/config.py`.
 | Env var | `REDIS_URL` | no default | Rate-limiting/token-cache backend | Required |
 | Env var | `MAX_INGEST_BYTES` | default: `2000000` | Cap on `/documents` upload/fetch size | Optional |
 | Env var | `DAILY_TOKEN_BUDGET` | default: unset (disabled) | Optional per-user daily token quota | Optional |
+| Env var | `CHROMA_HOST` | default: `localhost` | ChromaDB server hostname (ScoreWise tutor RAG); docker-compose overrides to `chromadb` | Optional |
+| Env var | `CHROMA_PORT` | default: `8001` | ChromaDB server port; docker-compose overrides to `8000` (container-internal) | Optional |
+| Env var | `MAX_SYLLABUS_UPLOAD_BYTES` | default: `20971520` (20MB) | Cap on `POST /admin/documents` PDF upload size | Optional |
 | Env var | `LOG_LEVEL` | default: `INFO` | Logging verbosity | Optional |
 | Env var | `APP_ENV` | default: `development` | `development`\|`staging`\|`production`; gates `/docs` exposure | Optional |
 | Env var | `WORKERS` | default: `4` | Gunicorn/Uvicorn worker count (deployment only) | Optional |
