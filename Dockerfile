@@ -32,6 +32,7 @@ WORKDIR /app
 
 COPY --from=build --chown=app:app /app/.venv /app/.venv
 COPY --from=build --chown=app:app /app/app /app/app
+COPY --from=build --chown=app:app /app/document_extraction /app/document_extraction
 COPY --from=build --chown=app:app /app/alembic.ini /app/alembic.ini
 
 ENV PATH="/app/.venv/bin:$PATH" \

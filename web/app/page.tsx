@@ -106,7 +106,7 @@ function Hero() {
           instant AI tutoring on anything you got wrong.
         </p>
         <div className="flex flex-col gap-3 sm:flex-row">
-          <Link href="/exam" className={PRIMARY_PILL_LG}>
+          <Link href="/exams" className={PRIMARY_PILL_LG}>
             Start Exam
           </Link>
           <a href="#how-it-works" className={SECONDARY_PILL_LG}>
@@ -155,7 +155,7 @@ function ClosingCta() {
           <p className="max-w-md text-text-muted">
             Two minutes from now you could be looking at your first scored, AI-tutored practice round.
           </p>
-          <Link href="/exam" className={`${PRIMARY_PILL_LG} mt-2`}>
+          <Link href="/exams" className={`${PRIMARY_PILL_LG} mt-2`}>
             Start Exam
           </Link>
         </div>

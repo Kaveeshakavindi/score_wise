@@ -14,8 +14,8 @@ _HEADERS = {"Authorization": "Bearer test-token"}
 
 @pytest.fixture
 async def client(test_user):
-    paper_repo = FakePaperRepository()
     question_repo = FakeQuestionRepository()
+    paper_repo = FakePaperRepository(question_repo=question_repo)
 
     app.dependency_overrides[get_current_user] = lambda: test_user
     app.dependency_overrides[get_paper_repository] = lambda: paper_repo
@@ -41,6 +41,21 @@ async def test_list_papers_filters_by_subject_query_param(client) -> None:
     body = response.json()
     assert body["total"] == 1
     assert body["items"][0]["subject"] == "Physics"
+
+
+async def test_list_papers_includes_question_count(client) -> None:
+    ac, paper_repo, question_repo = client
+    paper = await paper_repo.create("Physics", 2022)
+    for i in range(1, 4):
+        await question_repo.create(
+            paper.id, subject="Physics", year=2022, question_number=i, question_text=f"Q{i}",
+            options={"A": "x"}, correct_answer=0,
+        )
+
+    response = await ac.get("/api/v1/papers", headers=_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["question_count"] == 3
 
 
 async def test_list_papers_requires_auth() -> None:

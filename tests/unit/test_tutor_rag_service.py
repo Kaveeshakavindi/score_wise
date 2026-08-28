@@ -19,8 +19,10 @@ class _FakeLLM:
     def __init__(self, response: AIMessage) -> None:
         self._response = response
         self.received_messages: list | None = None
+        self.call_count = 0
 
     async def ainvoke(self, messages):
+        self.call_count += 1
         self.received_messages = messages
         return self._response
 
@@ -49,6 +51,7 @@ def tutor(settings, monkeypatch):
 
     monkeypatch.setattr(tutor_rag_service_module, "get_embedder", _fake_get_embedder)
     monkeypatch.setattr(tutor_rag_service_module, "embed_query", _fake_embed_query)
+    monkeypatch.setattr(chroma_client_module, "query_chunks", _async_return([]))
 
     return service, question_repo, message_repo, syllabus_document_repo
 
@@ -69,7 +72,7 @@ def _chunk(*, text: str, source_document_id: uuid.UUID, chunk_index: int = 0) ->
     }
 
 
-async def test_send_message_grounds_the_prompt_in_the_question_and_retrieved_context(tutor, monkeypatch) -> None:
+async def test_generate_feedback_grounds_the_prompt_in_the_question_and_retrieved_context(tutor, monkeypatch) -> None:
     service, question_repo, _, syllabus_document_repo = tutor
     question = await question_repo.create(
         uuid.uuid4(),
@@ -90,10 +93,9 @@ async def test_send_message_grounds_the_prompt_in_the_question_and_retrieved_con
     )
     fake_llm = _patch_llm(monkeypatch, "The correct answer is A, Newton, because force = mass x acceleration.")
 
-    result = await service.send_message(uuid.uuid4(), question.id, "Why is it A?")
+    message = await service.generate_feedback(uuid.uuid4(), question.id, selected_answer=1)
 
-    assert result.user_message.content == "Why is it A?"
-    assert result.assistant_message.content == "The correct answer is A, Newton, because force = mass x acceleration."
+    assert message.content == "The correct answer is A, Newton, because force = mass x acceleration."
 
     system_prompt = fake_llm.received_messages[0].content
     assert "What is the SI unit of force?" in system_prompt
@@ -102,7 +104,7 @@ async def test_send_message_grounds_the_prompt_in_the_question_and_retrieved_con
     assert "Force is measured in Newtons per the syllabus." in system_prompt
 
 
-async def test_send_message_attaches_resolved_citations_to_the_assistant_message(tutor, monkeypatch) -> None:
+async def test_generate_feedback_attaches_resolved_citations(tutor, monkeypatch) -> None:
     service, question_repo, _, syllabus_document_repo = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
@@ -118,9 +120,9 @@ async def test_send_message_attaches_resolved_citations_to_the_assistant_message
     )
     _patch_llm(monkeypatch, "reply")
 
-    result = await service.send_message(uuid.uuid4(), question.id, "help")
+    message = await service.generate_feedback(uuid.uuid4(), question.id, selected_answer=1)
 
-    assert result.assistant_message.citations == [
+    assert message.citations == [
         {
             "document_id": str(document.id),
             "filename": "physics_syllabus.pdf",
@@ -128,11 +130,11 @@ async def test_send_message_attaches_resolved_citations_to_the_assistant_message
             "snippet": "Grounding text.",
         }
     ]
-    # The user's own turn never carries citations — only the grounded reply does.
-    assert result.user_message.citations is None
 
 
-async def test_send_message_skips_citations_for_chunks_with_an_unresolvable_source_document(tutor, monkeypatch) -> None:
+async def test_generate_feedback_skips_citations_for_chunks_with_an_unresolvable_source_document(
+    tutor, monkeypatch
+) -> None:
     service, question_repo, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
@@ -145,88 +147,147 @@ async def test_send_message_skips_citations_for_chunks_with_an_unresolvable_sour
     )
     _patch_llm(monkeypatch, "reply")
 
-    result = await service.send_message(uuid.uuid4(), question.id, "help")
+    message = await service.generate_feedback(uuid.uuid4(), question.id)
 
-    assert result.assistant_message.citations is None
+    assert message.citations is None
 
 
-async def test_send_message_includes_the_students_wrong_answer_in_the_prompt(tutor, monkeypatch) -> None:
+async def test_generate_feedback_for_a_correct_answer_uses_the_correct_branch(tutor, monkeypatch) -> None:
     service, question_repo, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
         options={"A": "Newton", "B": "Joule"}, correct_answer=0,
     )
-    monkeypatch.setattr(chroma_client_module, "query_chunks", _async_return([]))
     fake_llm = _patch_llm(monkeypatch, "reply")
 
-    await service.send_message(uuid.uuid4(), question.id, "Why is it wrong?", selected_answer=1)
+    message = await service.generate_feedback(uuid.uuid4(), question.id, selected_answer=0)
 
+    assert message.is_correct is True
     system_prompt = fake_llm.received_messages[0].content
+    assert "The student answered correctly" in system_prompt
+    assert "Student's submitted answer: A (correct)" in system_prompt
+
+
+async def test_generate_feedback_for_a_wrong_answer_requests_the_structured_wrong_branch(tutor, monkeypatch) -> None:
+    service, question_repo, _, _ = tutor
+    question = await question_repo.create(
+        uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
+        options={"A": "Newton", "B": "Joule"}, correct_answer=0,
+    )
+    fake_llm = _patch_llm(monkeypatch, "reply")
+
+    message = await service.generate_feedback(uuid.uuid4(), question.id, selected_answer=1)
+
+    assert message.is_correct is False
+    system_prompt = fake_llm.received_messages[0].content
+    assert "The student answered incorrectly" in system_prompt
+    assert "**Why B is wrong**" in system_prompt
+    assert "**Why A is right**" in system_prompt
     assert "Student's submitted answer: B (incorrect)" in system_prompt
 
 
-async def test_send_message_without_a_selected_answer_omits_the_student_answer_line(tutor, monkeypatch) -> None:
+async def test_generate_feedback_for_a_missed_question_requests_the_structured_missed_branch(
+    tutor, monkeypatch
+) -> None:
     service, question_repo, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
         options={"A": "Newton", "B": "Joule"}, correct_answer=0,
     )
-    monkeypatch.setattr(chroma_client_module, "query_chunks", _async_return([]))
     fake_llm = _patch_llm(monkeypatch, "reply")
 
-    await service.send_message(uuid.uuid4(), question.id, "help")
+    message = await service.generate_feedback(uuid.uuid4(), question.id, selected_answer=None)
 
-    assert "Student's submitted answer" not in fake_llm.received_messages[0].content
+    assert message.is_correct is False
+    assert message.selected_answer is None
+    system_prompt = fake_llm.received_messages[0].content
+    assert "The student left this question blank" in system_prompt
+    assert "**Why A is right**" in system_prompt
+    assert "is wrong**" not in system_prompt  # no "why your answer is wrong" section — there was no answer
+    assert "Student's submitted answer: (left blank)" in system_prompt
 
 
-async def test_send_message_unknown_question_raises_not_found(tutor) -> None:
-    service, _, _, _ = tutor
-    with pytest.raises(NotFoundError):
-        await service.send_message(uuid.uuid4(), uuid.uuid4(), "hi")
-
-
-async def test_send_message_second_turn_includes_prior_turn_as_history(tutor, monkeypatch) -> None:
+async def test_generate_feedback_for_a_voided_question_uses_the_voided_branch(tutor, monkeypatch) -> None:
     service, question_repo, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
-        options={"A": "a", "B": "b"}, correct_answer=1,
+        options={"A": "a", "B": "b"}, correct_answer=0,
     )
-    monkeypatch.setattr(chroma_client_module, "query_chunks", _async_return([]))
+    question.accept_all = True
+    fake_llm = _patch_llm(monkeypatch, "reply")
+
+    message = await service.generate_feedback(uuid.uuid4(), question.id, selected_answer=1)
+
+    assert message.is_correct is True
+    assert "voided on the official marking scheme" in fake_llm.received_messages[0].content
+
+
+async def test_generate_feedback_unknown_question_raises_not_found(tutor) -> None:
+    service, _, _, _ = tutor
+    with pytest.raises(NotFoundError):
+        await service.generate_feedback(uuid.uuid4(), uuid.uuid4())
+
+
+async def test_generate_feedback_is_idempotent_and_does_not_call_the_llm_again(tutor, monkeypatch) -> None:
+    service, question_repo, _, _ = tutor
+    question = await question_repo.create(
+        uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
+        options={"A": "a", "B": "b"}, correct_answer=0,
+    )
     user_id = uuid.uuid4()
+    fake_llm = _patch_llm(monkeypatch, "First reply")
 
-    _patch_llm(monkeypatch, "First reply")
-    await service.send_message(user_id, question.id, "First message")
+    first = await service.generate_feedback(user_id, question.id, selected_answer=1)
+    second = await service.generate_feedback(user_id, question.id, selected_answer=1)
 
-    fake_llm_2 = _patch_llm(monkeypatch, "Second reply")
-    await service.send_message(user_id, question.id, "Second message")
-
-    contents = [m.content for m in fake_llm_2.received_messages]
-    assert "First message" in contents
-    assert "First reply" in contents
-    assert "Second message" in contents
+    assert first.id == second.id
+    assert second.content == "First reply"
+    assert fake_llm.call_count == 1
 
 
-async def test_send_message_scopes_history_per_user_not_globally(tutor, monkeypatch) -> None:
+async def test_generate_feedback_regenerates_when_the_selected_answer_changes(tutor, monkeypatch) -> None:
+    service, question_repo, _, _ = tutor
+    question = await question_repo.create(
+        uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
+        options={"A": "a", "B": "b", "C": "c"}, correct_answer=0,
+    )
+    user_id = uuid.uuid4()
+    _patch_llm(monkeypatch, "First reply, about B")
+
+    first = await service.generate_feedback(user_id, question.id, selected_answer=1)
+
+    fake_llm_second = _patch_llm(monkeypatch, "Second reply, about C")
+    second = await service.generate_feedback(user_id, question.id, selected_answer=2)
+
+    assert second.id != first.id
+    assert second.content == "Second reply, about C"
+    assert second.selected_answer == 2
+    assert fake_llm_second.call_count == 1
+
+    # Asking again about the first answer still returns that first cached
+    # row rather than re-generating or returning the second one.
+    third = await service.generate_feedback(user_id, question.id, selected_answer=1)
+    assert third.id == first.id
+    assert third.content == "First reply, about B"
+
+
+async def test_generate_feedback_scopes_caching_per_user_not_globally(tutor, monkeypatch) -> None:
     service, question_repo, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
         options={"A": "a"}, correct_answer=0,
     )
-    monkeypatch.setattr(chroma_client_module, "query_chunks", _async_return([]))
-
     _patch_llm(monkeypatch, "Reply to user A")
-    await service.send_message(uuid.uuid4(), question.id, "Message from user A")
+    await service.generate_feedback(uuid.uuid4(), question.id, selected_answer=0)
 
     fake_llm_b = _patch_llm(monkeypatch, "Reply to user B")
-    await service.send_message(uuid.uuid4(), question.id, "Message from user B")
+    message_b = await service.generate_feedback(uuid.uuid4(), question.id, selected_answer=0)
 
-    # user B's turn must not see user A's conversation
-    contents = [m.content for m in fake_llm_b.received_messages]
-    assert "Message from user A" not in contents
-    assert "Reply to user A" not in contents
+    assert message_b.content == "Reply to user B"
+    assert fake_llm_b.call_count == 1
 
 
-async def test_send_message_retrieval_failure_degrades_to_question_only_grounding(tutor, monkeypatch) -> None:
+async def test_generate_feedback_retrieval_failure_degrades_to_question_only_grounding(tutor, monkeypatch) -> None:
     service, question_repo, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
@@ -239,32 +300,8 @@ async def test_send_message_retrieval_failure_degrades_to_question_only_groundin
     monkeypatch.setattr(chroma_client_module, "query_chunks", _boom)
     fake_llm = _patch_llm(monkeypatch, "Answer anyway")
 
-    result = await service.send_message(uuid.uuid4(), question.id, "help")
+    message = await service.generate_feedback(uuid.uuid4(), question.id)
 
-    assert result.assistant_message.content == "Answer anyway"
-    assert result.assistant_message.citations is None
+    assert message.content == "Answer anyway"
+    assert message.citations is None
     assert "No matching syllabus content was found" in fake_llm.received_messages[0].content
-
-
-async def test_get_history_returns_this_users_prior_turns_oldest_first(tutor, monkeypatch) -> None:
-    service, question_repo, _, _ = tutor
-    question = await question_repo.create(
-        uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
-        options={"A": "a"}, correct_answer=0,
-    )
-    monkeypatch.setattr(chroma_client_module, "query_chunks", _async_return([]))
-    user_id = uuid.uuid4()
-    _patch_llm(monkeypatch, "reply")
-    await service.send_message(user_id, question.id, "hello")
-
-    history = await service.get_history(user_id, question.id)
-
-    assert [m.role for m in history] == ["user", "assistant"]
-    assert history[0].content == "hello"
-    assert history[1].content == "reply"
-
-
-async def test_get_history_unknown_question_raises_not_found(tutor) -> None:
-    service, _, _, _ = tutor
-    with pytest.raises(NotFoundError):
-        await service.get_history(uuid.uuid4(), uuid.uuid4())

@@ -16,10 +16,12 @@ from app.core.exceptions import RateLimitedError, UnauthorizedError
 from app.core.security import decode_access_token
 from app.db.base import get_db_session
 from app.db.models import User
+from document_extraction import DocumentExtractionService
 from app.repositories.message_repository import MessageRepository
 from app.repositories.rag_chunk_repository import RagChunkRepository
 from app.repositories.attempt_repository import AttemptRepository
 from app.repositories.paper_repository import PaperRepository
+from app.repositories.password_reset_token_repository import PasswordResetTokenRepository
 from app.repositories.question_repository import QuestionRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.session_repository import SessionRepository
@@ -30,6 +32,8 @@ from app.repositories.user_repository import UserRepository
 from app.services.attempt_service import AttemptService
 from app.services.auth_service import AuthService
 from app.services.chat_service import ChatService
+from app.services.dashboard_service import DashboardService
+from app.services.email_service import EmailSender, SesEmailSender
 from app.services.paper_service import PaperService
 from app.services.rag_service import RagService
 from app.services.session_service import SessionService
@@ -91,6 +95,10 @@ def get_refresh_token_repository(db: DbSession) -> RefreshTokenRepository:
     return RefreshTokenRepository(db)
 
 
+def get_password_reset_token_repository(db: DbSession) -> PasswordResetTokenRepository:
+    return PasswordResetTokenRepository(db)
+
+
 def get_tool_invocation_repository(db: DbSession) -> ToolInvocationRepository:
     return ToolInvocationRepository(db)
 
@@ -121,12 +129,18 @@ def get_tutor_message_repository(db: DbSession) -> TutorMessageRepository:
 # --- Services ---
 
 
+def get_email_sender(settings: SettingsDep) -> EmailSender:
+    return SesEmailSender(settings)
+
+
 def get_auth_service(
     user_repo: Annotated[UserRepository, Depends(get_user_repository)],
     refresh_token_repo: Annotated[RefreshTokenRepository, Depends(get_refresh_token_repository)],
+    password_reset_token_repo: Annotated[PasswordResetTokenRepository, Depends(get_password_reset_token_repository)],
+    email_sender: Annotated[EmailSender, Depends(get_email_sender)],
     settings: SettingsDep,
 ) -> AuthService:
-    return AuthService(user_repo, refresh_token_repo, settings)
+    return AuthService(user_repo, refresh_token_repo, password_reset_token_repo, email_sender, settings)
 
 
 def get_session_service(
@@ -152,6 +166,16 @@ def get_tool_service(
 
 def get_title_service(settings: SettingsDep) -> TitleService:
     return TitleService(settings)
+
+
+def get_document_extraction_service(settings: SettingsDep) -> DocumentExtractionService:
+    # Adapts app Settings -> the package's plain constructor args; the
+    # package itself has no idea this app (or Settings) exists, which is
+    # what keeps it reusable outside this codebase.
+    return DocumentExtractionService(
+        anthropic_api_key=settings.anthropic_api_key,
+        anthropic_model=settings.anthropic_model,
+    )
 
 
 def get_chat_service(
@@ -185,9 +209,18 @@ def get_attempt_service(
 
 def get_syllabus_ingestion_service(
     syllabus_document_repo: Annotated[SyllabusDocumentRepository, Depends(get_syllabus_document_repository)],
+    document_extraction: Annotated[DocumentExtractionService, Depends(get_document_extraction_service)],
     settings: SettingsDep,
 ) -> SyllabusIngestionService:
-    return SyllabusIngestionService(syllabus_document_repo, settings)
+    return SyllabusIngestionService(syllabus_document_repo, document_extraction, settings)
+
+
+def get_dashboard_service(
+    attempt_repo: Annotated[AttemptRepository, Depends(get_attempt_repository)],
+    tutor_message_repo: Annotated[TutorMessageRepository, Depends(get_tutor_message_repository)],
+    question_repo: Annotated[QuestionRepository, Depends(get_question_repository)],
+) -> DashboardService:
+    return DashboardService(attempt_repo, tutor_message_repo, question_repo)
 
 
 def get_tutor_rag_service(

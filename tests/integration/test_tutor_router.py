@@ -29,8 +29,10 @@ _HEADERS = {"Authorization": "Bearer test-token"}
 class _FakeLLM:
     def __init__(self, text: str) -> None:
         self._text = text
+        self.call_count = 0
 
     async def ainvoke(self, messages):
+        self.call_count += 1
         return AIMessage(content=self._text)
 
 
@@ -56,7 +58,7 @@ async def client(test_user, monkeypatch):
 
     monkeypatch.setattr(tutor_rag_service_module, "get_embedder", _fake_get_embedder)
     monkeypatch.setattr(tutor_rag_service_module, "embed_query", _fake_embed_query)
-    monkeypatch.setattr(tutor_rag_service_module, "get_llm", lambda *a, **k: _FakeLLM("Grounded tutor reply."))
+    monkeypatch.setattr(tutor_rag_service_module, "get_llm", lambda *a, **k: _FakeLLM("Grounded feedback."))
 
     async def _fake_query_chunks(settings, *, query_embedding, subject, k):
         return [
@@ -90,7 +92,7 @@ async def client(test_user, monkeypatch):
 _SYLLABUS_DOC_ID = uuid.uuid4()
 
 
-async def test_send_tutor_message_returns_grounded_reply_with_citations(client) -> None:
+async def test_get_tutor_feedback_returns_grounded_feedback_with_citations(client) -> None:
     ac, question_repo, _ = client
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="What is the SI unit of force?",
@@ -98,15 +100,14 @@ async def test_send_tutor_message_returns_grounded_reply_with_citations(client) 
     )
 
     response = await ac.post(
-        f"/api/v1/questions/{question.id}/tutor", json={"content": "Why is it A?"}, headers=_HEADERS
+        f"/api/v1/questions/{question.id}/tutor", json={"selected_answer": 1}, headers=_HEADERS
     )
 
     assert response.status_code == 201
     body = response.json()
-    assert body["user_message"]["content"] == "Why is it A?"
-    assert body["user_message"]["citations"] is None
-    assert body["assistant_message"]["content"] == "Grounded tutor reply."
-    assert body["assistant_message"]["citations"] == [
+    assert body["feedback"]["content"] == "Grounded feedback."
+    assert body["feedback"]["is_correct"] is False
+    assert body["feedback"]["citations"] == [
         {
             "document_id": str(_SYLLABUS_DOC_ID),
             "filename": "physics_syllabus.pdf",
@@ -116,7 +117,7 @@ async def test_send_tutor_message_returns_grounded_reply_with_citations(client) 
     ]
 
 
-async def test_send_tutor_message_with_selected_answer_grounds_the_prompt_in_it(client, monkeypatch) -> None:
+async def test_get_tutor_feedback_with_selected_answer_grounds_the_prompt_in_it(client, monkeypatch) -> None:
     ac, question_repo, _ = client
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="What is the SI unit of force?",
@@ -128,13 +129,13 @@ async def test_send_tutor_message_with_selected_answer_grounds_the_prompt_in_it(
     class _CapturingLLM:
         async def ainvoke(self, messages):
             captured["system_prompt"] = messages[0].content
-            return AIMessage(content="Grounded tutor reply.")
+            return AIMessage(content="Grounded feedback.")
 
     monkeypatch.setattr(tutor_rag_service_module, "get_llm", lambda *a, **k: _CapturingLLM())
 
     response = await ac.post(
         f"/api/v1/questions/{question.id}/tutor",
-        json={"content": "Why is it wrong?", "selected_answer": 1},
+        json={"selected_answer": 1},
         headers=_HEADERS,
     )
 
@@ -142,34 +143,48 @@ async def test_send_tutor_message_with_selected_answer_grounds_the_prompt_in_it(
     assert "Student's submitted answer: B (incorrect)" in captured["system_prompt"]
 
 
-async def test_send_tutor_message_unknown_question_returns_404(client) -> None:
+async def test_get_tutor_feedback_without_a_selected_answer_uses_the_missed_branch(client) -> None:
+    ac, question_repo, _ = client
+    question = await question_repo.create(
+        uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
+        options={"A": "a", "B": "b"}, correct_answer=0,
+    )
+
+    response = await ac.post(f"/api/v1/questions/{question.id}/tutor", json={}, headers=_HEADERS)
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["feedback"]["selected_answer"] is None
+    assert body["feedback"]["is_correct"] is False
+
+
+async def test_get_tutor_feedback_unknown_question_returns_404(client) -> None:
     ac, _, _ = client
     response = await ac.post(
-        f"/api/v1/questions/{uuid.uuid4()}/tutor", json={"content": "hi"}, headers=_HEADERS
+        f"/api/v1/questions/{uuid.uuid4()}/tutor", json={}, headers=_HEADERS
     )
     assert response.status_code == 404
 
 
-async def test_tutor_history_returns_prior_turns_for_this_question(client) -> None:
+async def test_get_tutor_feedback_is_idempotent_across_requests(client, monkeypatch) -> None:
     ac, question_repo, _ = client
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
-        options={"A": "a"}, correct_answer=0,
+        options={"A": "a", "B": "b"}, correct_answer=0,
     )
-    await ac.post(f"/api/v1/questions/{question.id}/tutor", json={"content": "First question"}, headers=_HEADERS)
+    fake_llm = _FakeLLM("Grounded feedback.")
+    monkeypatch.setattr(tutor_rag_service_module, "get_llm", lambda *a, **k: fake_llm)
 
-    response = await ac.get(f"/api/v1/questions/{question.id}/tutor/history", headers=_HEADERS)
+    first = await ac.post(f"/api/v1/questions/{question.id}/tutor", json={"selected_answer": 1}, headers=_HEADERS)
+    second = await ac.post(f"/api/v1/questions/{question.id}/tutor", json={"selected_answer": 1}, headers=_HEADERS)
 
-    assert response.status_code == 200
-    body = response.json()
-    assert [m["role"] for m in body] == ["user", "assistant"]
-    assert body[0]["content"] == "First question"
-    assert body[1]["citations"][0]["filename"] == "physics_syllabus.pdf"
+    assert first.json()["feedback"]["id"] == second.json()["feedback"]["id"]
+    assert fake_llm.call_count == 1
 
 
 async def test_tutor_routes_require_auth() -> None:
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-            response = await ac.get(f"/api/v1/questions/{uuid.uuid4()}/tutor/history")
+            response = await ac.post(f"/api/v1/questions/{uuid.uuid4()}/tutor", json={})
     assert response.status_code == 401

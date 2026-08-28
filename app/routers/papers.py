@@ -31,7 +31,15 @@ async def list_papers(
     """List available past papers, optionally filtered by subject, newest
     year first. Requires auth."""
     items, total = await paper_service.list_papers(subject, limit=limit, offset=offset)
-    return Page(items=[PaperOut.model_validate(p) for p in items], total=total, limit=limit, offset=offset)
+    return Page(
+        items=[
+            PaperOut(id=p.id, subject=p.subject, year=p.year, question_count=count, created_at=p.created_at)
+            for p, count in items
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/{paper_id}/questions", response_model=Page[QuestionOut])

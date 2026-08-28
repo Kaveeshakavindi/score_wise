@@ -15,6 +15,7 @@ from app.routers import (
     admin_documents,
     attempts,
     auth,
+    dashboard,
     documents,
     health,
     messages,
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(attempts.router)
     app.include_router(tutor.router)
     app.include_router(admin_documents.router)
+    app.include_router(dashboard.router)
 
     return app
 

@@ -4,6 +4,8 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from document_extraction import ExtractionMethod, ExtractionResult
+
 from app.core.exceptions import NotFoundError
 from app.db.models import (
     Attempt,
@@ -11,6 +13,7 @@ from app.db.models import (
     ChatSession,
     Message,
     Paper,
+    PasswordResetToken,
     Question,
     RagDocument,
     RefreshToken,
@@ -24,8 +27,8 @@ class FakeUserRepository:
     def __init__(self) -> None:
         self._by_id: dict[uuid.UUID, User] = {}
 
-    async def create(self, *, name: str, nickname: str, password_hash: str, age: int) -> User:
-        user = User(id=uuid.uuid4(), name=name, nickname=nickname, password_hash=password_hash, age=age)
+    async def create(self, *, name: str, nickname: str, password_hash: str, age: int, email: str | None = None) -> User:
+        user = User(id=uuid.uuid4(), name=name, nickname=nickname, password_hash=password_hash, age=age, email=email)
         user.created_at = datetime.now(timezone.utc)
         self._by_id[user.id] = user
         return user
@@ -38,6 +41,14 @@ class FakeUserRepository:
 
     async def exists_by_nickname(self, nickname: str) -> bool:
         return any(u.nickname == nickname for u in self._by_id.values())
+
+    async def get_by_email(self, email: str) -> User | None:
+        return next((u for u in self._by_id.values() if u.email == email), None)
+
+    async def update_password(self, user_id: uuid.UUID, password_hash: str) -> None:
+        user = self._by_id.get(user_id)
+        if user is not None:
+            user.password_hash = password_hash
 
 
 class FakeRefreshTokenRepository:
@@ -61,6 +72,39 @@ class FakeRefreshTokenRepository:
         for token in self._by_hash.values():
             if token.user_id == user_id and token.revoked_at is None:
                 token.revoked_at = revoked_at
+
+
+class FakePasswordResetTokenRepository:
+    def __init__(self) -> None:
+        self._by_hash: dict[str, PasswordResetToken] = {}
+
+    async def create(self, user_id: uuid.UUID, token_hash: str, expires_at: datetime) -> PasswordResetToken:
+        token = PasswordResetToken(id=uuid.uuid4(), user_id=user_id, token_hash=token_hash, expires_at=expires_at)
+        self._by_hash[token_hash] = token
+        return token
+
+    async def get_by_hash(self, token_hash: str) -> PasswordResetToken | None:
+        return self._by_hash.get(token_hash)
+
+    async def mark_used(self, token_id: uuid.UUID, used_at: datetime) -> None:
+        for token in self._by_hash.values():
+            if token.id == token_id:
+                token.used_at = used_at
+
+
+class FakeEmailSender:
+    """Records sent emails instead of calling any real provider — lets tests
+    assert on what would have been sent without any AWS dependency."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str]] = []  # (to, reset_url)
+        self.fail_next: bool = False
+
+    async def send_password_reset_email(self, *, to: str, reset_url: str) -> None:
+        if self.fail_next:
+            self.fail_next = False
+            raise RuntimeError("simulated email send failure")
+        self.sent.append((to, reset_url))
 
 
 class FakeSessionRepository:
@@ -267,8 +311,9 @@ class FakeToolInvocationRepository:
 
 
 class FakePaperRepository:
-    def __init__(self) -> None:
+    def __init__(self, *, question_repo: "FakeQuestionRepository | None" = None) -> None:
         self._by_id: dict[uuid.UUID, Paper] = {}
+        self._questions = question_repo
 
     async def create(self, subject: str, year: int) -> Paper:
         paper = Paper(id=uuid.uuid4(), subject=subject, year=year)
@@ -289,6 +334,14 @@ class FakePaperRepository:
 
     async def get_by_id(self, paper_id: uuid.UUID) -> Paper | None:
         return self._by_id.get(paper_id)
+
+    async def count_questions_by_paper_ids(self, paper_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+        wanted = set(paper_ids)
+        counts: dict[uuid.UUID, int] = {}
+        for question in self._questions._by_id.values():
+            if question.paper_id in wanted:
+                counts[question.paper_id] = counts.get(question.paper_id, 0) + 1
+        return counts
 
 
 class FakeQuestionRepository:
@@ -367,10 +420,44 @@ class FakeSyllabusDocumentRepository:
         self._by_id.pop(document_id, None)
 
 
+class FakeDocumentExtractionService:
+    """Stands in for document_extraction.DocumentExtractionService in tests
+    -- always returns a canned TEXT_LAYER result, never touches pypdf or
+    calls the real Anthropic API."""
+
+    def __init__(self, text: str = "a" * 1000) -> None:
+        self._text = text
+
+    async def extract(self, pdf_bytes: bytes, filename: str) -> ExtractionResult:
+        return ExtractionResult(
+            text=self._text,
+            method=ExtractionMethod.TEXT_LAYER,
+            raw_pdf_bytes=pdf_bytes,
+            page_count=1,
+            confidence_hint=1.0,
+            filename=filename,
+        )
+
+
 class FakeAttemptRepository:
-    def __init__(self) -> None:
+    """The dashboard read methods below need Paper/Question data to answer
+    what the real repo gets via a SQL join — rather than duplicating that
+    data into this fake, it optionally takes the same FakePaperRepository/
+    FakeQuestionRepository instances a test already built, and resolves
+    through their public get_by_id. `create`/`add_answer` don't need either,
+    so existing callers that build `FakeAttemptRepository()` with no args
+    (e.g. test_attempt_service.py) are unaffected."""
+
+    def __init__(
+        self,
+        *,
+        paper_repo: "FakePaperRepository | None" = None,
+        question_repo: "FakeQuestionRepository | None" = None,
+    ) -> None:
         self.attempts: dict[uuid.UUID, Attempt] = {}
         self.answers: list[AttemptAnswer] = []
+        self._papers = paper_repo
+        self._questions = question_repo
 
     async def create(self, *, user_id: uuid.UUID, paper_id: uuid.UUID, score: int, total: int) -> Attempt:
         attempt = Attempt(id=uuid.uuid4(), user_id=user_id, paper_id=paper_id, score=score, total=total)
@@ -391,6 +478,34 @@ class FakeAttemptRepository:
         self.answers.append(answer)
         return answer
 
+    # --- Dashboard reads (mirrors app/repositories/attempt_repository.py) ---
+
+    async def list_recent_with_paper(self, user_id: uuid.UUID, *, limit: int) -> list[tuple[Attempt, Paper]]:
+        items = sorted(
+            (a for a in self.attempts.values() if a.user_id == user_id), key=lambda a: a.created_at, reverse=True
+        )[:limit]
+        return [(a, await self._papers.get_by_id(a.paper_id)) for a in items]
+
+    async def count_by_user(self, user_id: uuid.UUID) -> int:
+        return sum(1 for a in self.attempts.values() if a.user_id == user_id)
+
+    async def subject_accuracy_by_user(self, user_id: uuid.UUID) -> list[tuple[str, int, int]]:
+        attempt_ids = {a.id for a in self.attempts.values() if a.user_id == user_id}
+        totals: dict[str, list[int]] = {}
+        for answer in self.answers:
+            if answer.attempt_id not in attempt_ids:
+                continue
+            question = await self._questions.get_by_id(answer.question_id)
+            bucket = totals.setdefault(question.subject, [0, 0])
+            bucket[1] += 1
+            if answer.is_correct:
+                bucket[0] += 1
+        return [(subject, correct, total) for subject, (correct, total) in totals.items()]
+
+    async def wrong_question_ids_by_user(self, user_id: uuid.UUID) -> list[uuid.UUID]:
+        attempt_ids = {a.id for a in self.attempts.values() if a.user_id == user_id}
+        return [a.question_id for a in self.answers if a.attempt_id in attempt_ids and not a.is_correct]
+
 
 class FakeTutorMessageRepository:
     def __init__(self) -> None:
@@ -404,16 +519,82 @@ class FakeTutorMessageRepository:
         role: str,
         content: str,
         citations: list[dict] | None = None,
+        selected_answer: int | None = None,
+        is_correct: bool | None = None,
     ) -> TutorMessage:
         message = TutorMessage(
-            id=uuid.uuid4(), question_id=question_id, user_id=user_id, role=role, content=content, citations=citations
+            id=uuid.uuid4(),
+            question_id=question_id,
+            user_id=user_id,
+            role=role,
+            content=content,
+            citations=citations,
+            selected_answer=selected_answer,
+            is_correct=is_correct,
         )
         message.created_at = datetime.now(timezone.utc)
         self._by_key.setdefault((question_id, user_id), []).append(message)
         return message
 
     async def history(self, *, question_id: uuid.UUID, user_id: uuid.UUID) -> list[TutorMessage]:
-        return list(self._by_key.get((question_id, user_id), []))
+        # Mirrors the real repo: display-only, scoped to role="assistant".
+        return [m for m in self._by_key.get((question_id, user_id), []) if m.role == "assistant"]
+
+    async def get_one(
+        self, *, question_id: uuid.UUID, user_id: uuid.UUID, selected_answer: int | None = None
+    ) -> TutorMessage | None:
+        # Mirrors the real repo: only a genuine structured-feedback row
+        # (role="assistant", is_correct set) for this exact selected_answer
+        # counts as a cache hit — see
+        # app/repositories/tutor_message_repository.py's get_one docstring.
+        match = None
+        for message in self._by_key.get((question_id, user_id), []):
+            if (
+                message.role == "assistant"
+                and message.is_correct is not None
+                and message.selected_answer == selected_answer
+            ):
+                match = message  # keep scanning so the most recent one wins, like ORDER BY created_at.desc()
+        return match
+
+    # --- Dashboard reads (mirrors app/repositories/tutor_message_repository.py) ---
+
+    async def reviewed_question_ids(self, user_id: uuid.UUID, question_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+        wanted = set(question_ids)
+        return {
+            question_id
+            for (question_id, uid), messages in self._by_key.items()
+            if uid == user_id and question_id in wanted and messages
+        }
+
+    async def top_cited_topics_by_user(self, user_id: uuid.UUID, *, limit: int = 5) -> list[tuple[str, int]]:
+        counts: dict[str, int] = {}
+        for (_, uid), messages in self._by_key.items():
+            if uid != user_id:
+                continue
+            for message in messages:
+                if message.role != "assistant" or message.is_correct is not False or not message.citations:
+                    continue
+                for citation in message.citations:
+                    topic = citation.get("topic")
+                    if topic:
+                        counts[topic] = counts.get(topic, 0) + 1
+        ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+        return ranked[:limit]
+
+    async def count_threaded_questions_by_user(self, user_id: uuid.UUID) -> int:
+        return sum(1 for (_, uid), messages in self._by_key.items() if uid == user_id and messages)
+
+    async def list_threaded_question_ids_by_user(
+        self, user_id: uuid.UUID, *, limit: int, offset: int
+    ) -> list[uuid.UUID]:
+        entries = [
+            (question_id, max(m.created_at for m in messages))
+            for (question_id, uid), messages in self._by_key.items()
+            if uid == user_id and messages
+        ]
+        entries.sort(key=lambda entry: entry[1], reverse=True)
+        return [question_id for question_id, _ in entries[offset : offset + limit]]
 
 
 class FakeRedis:

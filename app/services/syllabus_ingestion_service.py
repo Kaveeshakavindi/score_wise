@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import uuid
 
+from document_extraction import DocumentExtractionError, DocumentExtractionService
+
 from app.core.config import Settings
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.db.models import SyllabusDocument
 from app.llm.embedder import embed_documents, get_embedder
 from app.repositories.syllabus_document_repository import SyllabusDocumentRepository
-from app.services.pdf_extraction import extract_text_from_pdf
 from app.services.rag_service import _chunk_text  # reused as-is — see §2 step 2, chunk_size=800/overlap=120 fit here too
 from app.vectorstore import chroma_client
 
@@ -17,8 +18,14 @@ class SyllabusIngestionService:
     in ChromaDB, and record the upload in SQL so it stays listable/deletable
     instead of a fire-and-forget vector-store write."""
 
-    def __init__(self, repo: SyllabusDocumentRepository, settings: Settings) -> None:
+    def __init__(
+        self,
+        repo: SyllabusDocumentRepository,
+        document_extraction: DocumentExtractionService,
+        settings: Settings,
+    ) -> None:
         self._repo = repo
+        self._document_extraction = document_extraction
         self._settings = settings
 
     async def ingest_pdf(
@@ -35,8 +42,23 @@ class SyllabusIngestionService:
             if existing is not None:
                 raise ConflictError(f"Syllabus document {document_id} already exists.")
 
-        # Step 1: extract raw text.
-        text = extract_text_from_pdf(pdf_bytes)
+        # Step 1: extract raw text -- pypdf's text layer when it's usable
+        # (free, instant), a one-shot Claude vision transcription when it
+        # isn't (a scanned or partially scanned syllabus), decided by
+        # DocumentExtractionService's own completeness heuristic (§document
+        # extraction package). Both failure modes it can raise -- file isn't
+        # a readable PDF at all, or the vision fallback call itself fails --
+        # surface as DocumentExtractionError; translated to ValidationError
+        # here so callers of this service only ever see its own established
+        # exception hierarchy, not a different package's.
+        try:
+            result = await self._document_extraction.extract(pdf_bytes, filename)
+        except DocumentExtractionError as exc:
+            raise ValidationError(str(exc)) from exc
+
+        if not result.text or not result.text.strip():
+            raise ValidationError("No extractable text was found in this PDF.")
+        text = result.text
 
         # Step 2: chunk — reuses the chatbot RAG module's existing
         # chunk_size=800/overlap=120 params, which are already tuned for this
