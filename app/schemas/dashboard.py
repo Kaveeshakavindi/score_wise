@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -29,6 +29,11 @@ class TopicCountOut(BaseModel):
     count: int
 
 
+class DailyActivityOut(BaseModel):
+    date: date
+    count: int
+
+
 class DashboardSummaryOut(BaseModel):
     overall_correct: int
     overall_total: int
@@ -43,6 +48,10 @@ class DashboardSummaryOut(BaseModel):
     # Distinct wrong answers the student has viewed AI tutor feedback for.
     tutor_helped_count: int
     top_topics: list[TopicCountOut]
+    # Explanations viewed per day, last 14 days, zero-filled, oldest -> newest
+    # — the "AI Tutor activity" engagement chart. Every outcome counts, not
+    # just mistakes (see DashboardService.get_summary).
+    tutor_activity: list[DailyActivityOut]
 
 
 class TutorHelpedQuestionOut(BaseModel):

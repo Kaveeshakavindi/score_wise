@@ -319,8 +319,15 @@ class TutorMessage(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     # The syllabus chunks retrieved from ChromaDB that grounded this
     # feedback (document/topic/snippet), so the UI can show "citations"
-    # proving the explanation isn't unsourced.
-    citations: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+    # proving the explanation isn't unsourced. none_as_null=True: SQLAlchemy's
+    # JSON/JSONB type otherwise encodes a Python None as the JSON scalar
+    # `null` *inside* the column instead of a real SQL NULL, which passes
+    # `citations IS NOT NULL` checks (get_one, top_cited_topics_by_user) and
+    # crashes top_cited_topics_by_user's jsonb_array_elements() lateral join
+    # ("cannot extract elements from a scalar") the moment any row has no
+    # citations. A genuine SQL NULL is what every reader here already
+    # assumes "no citations" looks like.
+    citations: Mapped[list[dict] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     # The option the student had selected (mirrors AttemptSubmitRequest's
     # 0-based index convention); null if they left the question blank.
     selected_answer: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -330,9 +337,50 @@ class TutorMessage(Base):
     # scoped to mistakes instead of counting every question the student
     # viewed feedback for.
     is_correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # The Anthropic call's own reported usage for this generation (see
+    # TutorRagService.generate_feedback / app/llm/pricing.py) — lets the UI
+    # show this explanation's real token cost with no join. Null for rows
+    # created before this tracking existed; never backfilled with a guess.
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
     __table_args__ = (
         CheckConstraint("role IN ('user', 'assistant')", name="tutor_messages_role_check"),
         Index("idx_tutor_messages_question_user_created", "question_id", "user_id", created_at.asc()),
+    )
+
+
+class LlmUsageEvent(Base):
+    """One row per LLM call, across every feature (tutor feedback, chat,
+    title generation) — an append-only ledger independent of any feature's
+    own tables, so a per-user daily token budget (see
+    app.core.deps.token_budget_check) and any future cross-feature usage
+    view don't need to know how each feature stores its own messages.
+    Recorded best-effort right after each call succeeds; a logging failure
+    here must never break the feature that triggered it (mirrors
+    TutorRagService._retrieve_context's ChromaDB fallback)."""
+
+    __tablename__ = "llm_usage_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Nullable: a future system/background call (e.g. a batch job) has no
+    # attributable user, but should still be counted somewhere.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    feature: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Ties this row back to the structured request log (app/core/logging.py's
+    # get_request_id()) for cross-referencing, not a foreign key — nothing
+    # else in the DB is keyed by request_id.
+    request_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_llm_usage_events_user_created", "user_id", created_at.desc()),
+        Index("idx_llm_usage_events_feature", "feature"),
     )

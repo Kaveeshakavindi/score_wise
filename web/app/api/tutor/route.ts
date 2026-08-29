@@ -46,5 +46,12 @@ export async function POST(request: Request) {
     // The syllabus chunks that grounded this feedback, so the UI can show
     // them as citations proving the explanation isn't unsourced.
     citations: mapCitations(feedback.citations),
+    // Real usage from the call that generated this explanation, and its
+    // estimated dollar cost — null until app/llm/pricing.py has real rates
+    // for the current model, so the UI just omits the cost line then rather
+    // than showing a fabricated $0.00.
+    inputTokens: feedback.input_tokens as number | null,
+    outputTokens: feedback.output_tokens as number | null,
+    estimatedCostUsd: feedback.estimated_cost_usd as number | null,
   });
 }

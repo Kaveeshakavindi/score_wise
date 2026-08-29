@@ -1,0 +1,52 @@
+# Fly.io app config for the FastAPI backend — deploys the existing root
+# Dockerfile unchanged (multi-stage, gunicorn+uvicorn workers on :8000).
+# Region defaults to Singapore given this app's GCE A/L (Sri Lanka) audience;
+# change if your users are elsewhere.
+app = "scorewise-api"
+primary_region = "sin"
+
+[build]
+
+[env]
+  # 1, not just "fewer than 4": app/llm/embedder.py lazily loads the local
+  # embedding model on the *first real request* that needs it (not at boot),
+  # and one worker alone hit 427MB anon-rss doing that in production logs --
+  # 2 workers both doing that at once is what actually caused the
+  # boot-OOM-timeout loop at 1024mb, not merely "not enough total memory".
+  # One worker is fine for a small pilot's concurrency (uvicorn's own event
+  # loop handles concurrent I/O-bound requests within it); only literally
+  # simultaneous embedding calls would serialize. Revisit alongside [[vm]]
+  # memory below once real traffic needs more.
+  WORKERS = "1"
+
+[deploy]
+  # Runs against DATABASE_URL (the Neon secret) before traffic switches to
+  # the new release — same command app/db/migrations already ships with,
+  # and the same thing docker-compose.yml's local `migrate` service runs.
+  release_command = "alembic upgrade head"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  # Kept always-on rather than scale-to-zero: this is the BFF's (web/) and
+  # the admin panel's only backend, and a cold start on either would show up
+  # as a real stall for whoever's testing the pilot. Revisit if cost matters
+  # more than that once traffic is real.
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # 1024mb still OOM'd: a single worker actually doing embedding work hit
+  # 427MB anon-rss alone, and two of those plus gunicorn's master process
+  # and OS overhead left no real headroom. 2048mb gives the one worker
+  # (see [env] above) several times its observed peak, not a razor's edge.
+  memory = "2048mb"

@@ -42,4 +42,11 @@ ENV PATH="/app/.venv/bin:$PATH" \
 USER app
 EXPOSE 8000
 
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "4", "-b", "0.0.0.0:8000", "app.main:app"]
+# Shell form (via explicit `sh -c`, not Docker's bare shell-form CMD) so
+# $WORKERS is actually substituted at container start -- previously this was
+# hardcoded to 4 regardless of the WORKERS env var Settings.workers already
+# read (app/core/config.py), so tuning worker count per-environment (e.g. a
+# smaller pilot-scale host) required editing this file. Defaults to 4,
+# matching the previous hardcoded value and local .env's WORKERS=4, so
+# nothing changes unless WORKERS is set.
+CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker -w ${WORKERS:-4} -b 0.0.0.0:8000 app.main:app"]

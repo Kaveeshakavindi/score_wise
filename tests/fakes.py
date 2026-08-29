@@ -17,10 +17,12 @@ from app.db.models import (
     Question,
     RagDocument,
     RefreshToken,
+    LlmUsageEvent,
     SyllabusDocument,
     TutorMessage,
     User,
 )
+from app.llm.anthropic_client import Usage
 
 
 class FakeUserRepository:
@@ -521,6 +523,8 @@ class FakeTutorMessageRepository:
         citations: list[dict] | None = None,
         selected_answer: int | None = None,
         is_correct: bool | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
     ) -> TutorMessage:
         message = TutorMessage(
             id=uuid.uuid4(),
@@ -531,6 +535,8 @@ class FakeTutorMessageRepository:
             citations=citations,
             selected_answer=selected_answer,
             is_correct=is_correct,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
         message.created_at = datetime.now(timezone.utc)
         self._by_key.setdefault((question_id, user_id), []).append(message)
@@ -582,6 +588,18 @@ class FakeTutorMessageRepository:
         ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
         return ranked[:limit]
 
+    async def daily_counts_by_user(self, user_id: uuid.UUID, since: datetime) -> list[tuple]:
+        counts: dict = {}
+        for (_, uid), messages in self._by_key.items():
+            if uid != user_id:
+                continue
+            for message in messages:
+                if message.role != "assistant" or message.created_at < since:
+                    continue
+                day = message.created_at.date()
+                counts[day] = counts.get(day, 0) + 1
+        return sorted(counts.items())
+
     async def count_threaded_questions_by_user(self, user_id: uuid.UUID) -> int:
         return sum(1 for (_, uid), messages in self._by_key.items() if uid == user_id and messages)
 
@@ -595,6 +613,33 @@ class FakeTutorMessageRepository:
         ]
         entries.sort(key=lambda entry: entry[1], reverse=True)
         return [question_id for question_id, _ in entries[offset : offset + limit]]
+
+
+class FakeLlmUsageRepository:
+    """Mirrors app/repositories/llm_usage_repository.py's LlmUsageRepository."""
+
+    def __init__(self) -> None:
+        self.events: list[LlmUsageEvent] = []
+
+    async def record(
+        self, *, user_id: uuid.UUID | None, feature: str, model: str, usage: Usage, request_id: str | None
+    ) -> LlmUsageEvent:
+        event = LlmUsageEvent(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            feature=feature,
+            model=model,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            total_tokens=usage.total_tokens,
+            request_id=request_id,
+        )
+        event.created_at = datetime.now(timezone.utc)
+        self.events.append(event)
+        return event
+
+    async def sum_tokens_since(self, user_id: uuid.UUID, since: datetime) -> int:
+        return sum(e.total_tokens for e in self.events if e.user_id == user_id and e.created_at >= since)
 
 
 class FakeRedis:

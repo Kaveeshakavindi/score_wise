@@ -71,6 +71,9 @@ async def test_summary_reflects_submitted_attempts(client) -> None:
     assert body["mistakes_total"] == 1
     assert body["mistakes_unreviewed"] == 1
     assert body["tutor_helped_count"] == 0
+    # Zero-filled fixed 14-day window, no tutor activity recorded above.
+    assert len(body["tutor_activity"]) == 14
+    assert all(a["count"] == 0 for a in body["tutor_activity"])
 
 
 async def test_tutor_history_includes_question_details_and_messages(client) -> None:

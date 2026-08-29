@@ -8,9 +8,11 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.core.config import Settings
 from app.core.exceptions import NotFoundError
+from app.core.logging import get_request_id, logger
 from app.db.models import Question, TutorMessage
-from app.llm.anthropic_client import get_llm, get_text_content
+from app.llm.anthropic_client import get_llm, get_text_content, get_usage
 from app.llm.embedder import embed_query, get_embedder
+from app.repositories.llm_usage_repository import LlmUsageRepository
 from app.repositories.question_repository import QuestionRepository
 from app.repositories.syllabus_document_repository import SyllabusDocumentRepository
 from app.repositories.tutor_message_repository import TutorMessageRepository
@@ -114,11 +116,13 @@ class TutorRagService:
         question_repo: QuestionRepository,
         tutor_message_repo: TutorMessageRepository,
         syllabus_document_repo: SyllabusDocumentRepository,
+        llm_usage_repo: LlmUsageRepository,
         settings: Settings,
     ) -> None:
         self._questions = question_repo
         self._messages = tutor_message_repo
         self._syllabus_documents = syllabus_document_repo
+        self._llm_usage = llm_usage_repo
         self._settings = settings
 
     async def generate_feedback(
@@ -146,8 +150,9 @@ class TutorRagService:
             [SystemMessage(content=_build_system_prompt(question, citations, selected_answer, is_correct)), _GENERATE_TURN]
         )
         response_text = get_text_content(response).strip()
+        usage = get_usage(response)
 
-        return await self._messages.create(
+        message = await self._messages.create(
             question_id=question_id,
             user_id=user_id,
             role="assistant",
@@ -155,7 +160,25 @@ class TutorRagService:
             citations=[c.as_dict() for c in citations] or None,
             selected_answer=selected_answer,
             is_correct=is_correct,
+            input_tokens=usage.input_tokens if usage else None,
+            output_tokens=usage.output_tokens if usage else None,
         )
+
+        if usage is not None:
+            # Best-effort: a logging failure here must never lose the
+            # explanation that was already generated and stored above.
+            try:
+                await self._llm_usage.record(
+                    user_id=user_id,
+                    feature="tutor_feedback",
+                    model=self._settings.anthropic_model,
+                    usage=usage,
+                    request_id=get_request_id(),
+                )
+            except Exception as exc:
+                logger.warning("llm_usage_record_failed", feature="tutor_feedback", error=str(exc))
+
+        return message
 
     async def _retrieve_context(self, question: Question) -> list[dict[str, Any]]:
         try:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 
 from app.db.models import TutorMessage
 from app.repositories.attempt_repository import AttemptRepository
@@ -11,6 +11,7 @@ from app.repositories.tutor_message_repository import TutorMessageRepository
 
 DEFAULT_TREND_ATTEMPTS = 12
 DEFAULT_TOP_TOPICS = 5
+DEFAULT_ACTIVITY_DAYS = 14
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,12 @@ class TopicCount:
 
 
 @dataclass(frozen=True)
+class DailyActivity:
+    day: date
+    count: int
+
+
+@dataclass(frozen=True)
 class DashboardSummary:
     overall_correct: int
     overall_total: int
@@ -51,6 +58,12 @@ class DashboardSummary:
     # "Tutor helped with" figure.
     tutor_helped_count: int
     top_topics: list[TopicCount]
+    # Explanations viewed per day, last DEFAULT_ACTIVITY_DAYS days,
+    # zero-filled and oldest -> newest — the "AI Tutor activity" engagement
+    # chart. Deliberately a study-habit signal (every outcome counts), not a
+    # cost metric -- see app/repositories/tutor_message_repository.py's
+    # daily_counts_by_user docstring for why this isn't mistake-scoped.
+    tutor_activity: list[DailyActivity]
 
 
 @dataclass(frozen=True)
@@ -127,6 +140,10 @@ class DashboardService:
         topic_rows = await self._tutor_messages.top_cited_topics_by_user(user_id, limit=DEFAULT_TOP_TOPICS)
         top_topics = [TopicCount(topic=t, count=c) for t, c in topic_rows]
 
+        activity_since = datetime.now(timezone.utc) - timedelta(days=DEFAULT_ACTIVITY_DAYS - 1)
+        activity_rows = await self._tutor_messages.daily_counts_by_user(user_id, activity_since)
+        tutor_activity = _zero_filled_daily_activity(activity_rows, days=DEFAULT_ACTIVITY_DAYS)
+
         return DashboardSummary(
             overall_correct=overall_correct,
             overall_total=overall_total,
@@ -138,6 +155,7 @@ class DashboardService:
             follow_through_rate=follow_through_rate,
             tutor_helped_count=tutor_helped_count,
             top_topics=top_topics,
+            tutor_activity=tutor_activity,
         )
 
     async def list_tutor_history(
@@ -173,3 +191,17 @@ class DashboardService:
                 )
             )
         return results, total
+
+
+def _zero_filled_daily_activity(rows: list[tuple[date, int]], *, days: int) -> list[DailyActivity]:
+    """Fills in the gaps in a sparse GROUP-BY-day result so the chart always
+    renders a fixed `days`-wide window (today and the `days - 1` days before
+    it), oldest -> newest, rather than only the days that happen to have a
+    row -- a chart missing bars for zero-activity days would misread as
+    missing data, not "nothing happened that day"."""
+    counts = {day: count for day, count in rows}
+    today = datetime.now(timezone.utc).date()
+    return [
+        DailyActivity(day=day, count=counts.get(day, 0))
+        for day in (today - timedelta(days=offset) for offset in range(days - 1, -1, -1))
+    ]

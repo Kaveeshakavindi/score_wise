@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from app.core.deps import CurrentUser, get_dashboard_service, rate_limit_per_user
 from app.schemas.common import Page
 from app.schemas.dashboard import (
+    DailyActivityOut,
     DashboardSummaryOut,
     SubjectAccuracyOut,
     TopicCountOut,
@@ -53,6 +54,7 @@ async def get_summary(current_user: CurrentUser, dashboard_service: DashboardSer
         follow_through_rate=summary.follow_through_rate,
         tutor_helped_count=summary.tutor_helped_count,
         top_topics=[TopicCountOut(topic=t.topic, count=t.count) for t in summary.top_topics],
+        tutor_activity=[DailyActivityOut(date=a.day, count=a.count) for a in summary.tutor_activity],
     )
 
 

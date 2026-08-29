@@ -36,5 +36,9 @@ export async function GET() {
       topic: t.topic as string,
       count: t.count as number,
     })),
+    tutorActivity: (data.tutor_activity ?? []).map((a: Record<string, unknown>) => ({
+      date: a.date as string,
+      count: a.count as number,
+    })),
   });
 }

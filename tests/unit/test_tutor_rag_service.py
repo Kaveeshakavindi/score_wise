@@ -9,7 +9,12 @@ import app.services.tutor_rag_service as tutor_rag_service_module
 from app.core.exceptions import NotFoundError
 from app.services.tutor_rag_service import TutorRagService
 from app.vectorstore import chroma_client as chroma_client_module
-from tests.fakes import FakeQuestionRepository, FakeSyllabusDocumentRepository, FakeTutorMessageRepository
+from tests.fakes import (
+    FakeLlmUsageRepository,
+    FakeQuestionRepository,
+    FakeSyllabusDocumentRepository,
+    FakeTutorMessageRepository,
+)
 
 
 class _FakeLLM:
@@ -47,13 +52,14 @@ def tutor(settings, monkeypatch):
     question_repo = FakeQuestionRepository()
     message_repo = FakeTutorMessageRepository()
     syllabus_document_repo = FakeSyllabusDocumentRepository()
-    service = TutorRagService(question_repo, message_repo, syllabus_document_repo, settings)
+    llm_usage_repo = FakeLlmUsageRepository()
+    service = TutorRagService(question_repo, message_repo, syllabus_document_repo, llm_usage_repo, settings)
 
     monkeypatch.setattr(tutor_rag_service_module, "get_embedder", _fake_get_embedder)
     monkeypatch.setattr(tutor_rag_service_module, "embed_query", _fake_embed_query)
     monkeypatch.setattr(chroma_client_module, "query_chunks", _async_return([]))
 
-    return service, question_repo, message_repo, syllabus_document_repo
+    return service, question_repo, message_repo, syllabus_document_repo, llm_usage_repo
 
 
 def _patch_llm(monkeypatch, response_text: str) -> _FakeLLM:
@@ -73,7 +79,7 @@ def _chunk(*, text: str, source_document_id: uuid.UUID, chunk_index: int = 0) ->
 
 
 async def test_generate_feedback_grounds_the_prompt_in_the_question_and_retrieved_context(tutor, monkeypatch) -> None:
-    service, question_repo, _, syllabus_document_repo = tutor
+    service, question_repo, _, syllabus_document_repo, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(),
         subject="Physics",
@@ -105,7 +111,7 @@ async def test_generate_feedback_grounds_the_prompt_in_the_question_and_retrieve
 
 
 async def test_generate_feedback_attaches_resolved_citations(tutor, monkeypatch) -> None:
-    service, question_repo, _, syllabus_document_repo = tutor
+    service, question_repo, _, syllabus_document_repo, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
         options={"A": "a", "B": "b"}, correct_answer=0,
@@ -135,7 +141,7 @@ async def test_generate_feedback_attaches_resolved_citations(tutor, monkeypatch)
 async def test_generate_feedback_skips_citations_for_chunks_with_an_unresolvable_source_document(
     tutor, monkeypatch
 ) -> None:
-    service, question_repo, _, _ = tutor
+    service, question_repo, _, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
         options={"A": "a"}, correct_answer=0,
@@ -153,7 +159,7 @@ async def test_generate_feedback_skips_citations_for_chunks_with_an_unresolvable
 
 
 async def test_generate_feedback_for_a_correct_answer_uses_the_correct_branch(tutor, monkeypatch) -> None:
-    service, question_repo, _, _ = tutor
+    service, question_repo, _, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
         options={"A": "Newton", "B": "Joule"}, correct_answer=0,
@@ -169,7 +175,7 @@ async def test_generate_feedback_for_a_correct_answer_uses_the_correct_branch(tu
 
 
 async def test_generate_feedback_for_a_wrong_answer_requests_the_structured_wrong_branch(tutor, monkeypatch) -> None:
-    service, question_repo, _, _ = tutor
+    service, question_repo, _, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
         options={"A": "Newton", "B": "Joule"}, correct_answer=0,
@@ -189,7 +195,7 @@ async def test_generate_feedback_for_a_wrong_answer_requests_the_structured_wron
 async def test_generate_feedback_for_a_missed_question_requests_the_structured_missed_branch(
     tutor, monkeypatch
 ) -> None:
-    service, question_repo, _, _ = tutor
+    service, question_repo, _, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
         options={"A": "Newton", "B": "Joule"}, correct_answer=0,
@@ -208,7 +214,7 @@ async def test_generate_feedback_for_a_missed_question_requests_the_structured_m
 
 
 async def test_generate_feedback_for_a_voided_question_uses_the_voided_branch(tutor, monkeypatch) -> None:
-    service, question_repo, _, _ = tutor
+    service, question_repo, _, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
         options={"A": "a", "B": "b"}, correct_answer=0,
@@ -223,13 +229,13 @@ async def test_generate_feedback_for_a_voided_question_uses_the_voided_branch(tu
 
 
 async def test_generate_feedback_unknown_question_raises_not_found(tutor) -> None:
-    service, _, _, _ = tutor
+    service, _, _, _, _ = tutor
     with pytest.raises(NotFoundError):
         await service.generate_feedback(uuid.uuid4(), uuid.uuid4())
 
 
 async def test_generate_feedback_is_idempotent_and_does_not_call_the_llm_again(tutor, monkeypatch) -> None:
-    service, question_repo, _, _ = tutor
+    service, question_repo, _, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
         options={"A": "a", "B": "b"}, correct_answer=0,
@@ -246,7 +252,7 @@ async def test_generate_feedback_is_idempotent_and_does_not_call_the_llm_again(t
 
 
 async def test_generate_feedback_regenerates_when_the_selected_answer_changes(tutor, monkeypatch) -> None:
-    service, question_repo, _, _ = tutor
+    service, question_repo, _, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
         options={"A": "a", "B": "b", "C": "c"}, correct_answer=0,
@@ -272,7 +278,7 @@ async def test_generate_feedback_regenerates_when_the_selected_answer_changes(tu
 
 
 async def test_generate_feedback_scopes_caching_per_user_not_globally(tutor, monkeypatch) -> None:
-    service, question_repo, _, _ = tutor
+    service, question_repo, _, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
         options={"A": "a"}, correct_answer=0,
@@ -288,7 +294,7 @@ async def test_generate_feedback_scopes_caching_per_user_not_globally(tutor, mon
 
 
 async def test_generate_feedback_retrieval_failure_degrades_to_question_only_grounding(tutor, monkeypatch) -> None:
-    service, question_repo, _, _ = tutor
+    service, question_repo, _, _, _ = tutor
     question = await question_repo.create(
         uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
         options={"A": "a"}, correct_answer=0,
@@ -305,3 +311,37 @@ async def test_generate_feedback_retrieval_failure_degrades_to_question_only_gro
     assert message.content == "Answer anyway"
     assert message.citations is None
     assert "No matching syllabus content was found" in fake_llm.received_messages[0].content
+
+
+async def test_generate_feedback_stores_token_usage_and_records_it_to_the_ledger(tutor, monkeypatch) -> None:
+    service, question_repo, _, _, llm_usage_repo = tutor
+    question = await question_repo.create(
+        uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
+        options={"A": "a", "B": "b"}, correct_answer=0,
+    )
+    fake = _FakeLLM(AIMessage(content="reply", usage_metadata={"input_tokens": 500, "output_tokens": 80, "total_tokens": 580}))
+    monkeypatch.setattr(tutor_rag_service_module, "get_llm", lambda *a, **k: fake)
+
+    message = await service.generate_feedback(uuid.uuid4(), question.id, selected_answer=1)
+
+    assert message.input_tokens == 500
+    assert message.output_tokens == 80
+    assert len(llm_usage_repo.events) == 1
+    assert llm_usage_repo.events[0].feature == "tutor_feedback"
+    assert llm_usage_repo.events[0].total_tokens == 580
+
+
+async def test_generate_feedback_cache_hit_does_not_record_usage_again(tutor, monkeypatch) -> None:
+    service, question_repo, _, _, llm_usage_repo = tutor
+    question = await question_repo.create(
+        uuid.uuid4(), subject="Physics", year=2022, question_number=1, question_text="Q?",
+        options={"A": "a", "B": "b"}, correct_answer=0,
+    )
+    user_id = uuid.uuid4()
+    fake = _FakeLLM(AIMessage(content="reply", usage_metadata={"input_tokens": 500, "output_tokens": 80, "total_tokens": 580}))
+    monkeypatch.setattr(tutor_rag_service_module, "get_llm", lambda *a, **k: fake)
+
+    await service.generate_feedback(user_id, question.id, selected_answer=1)
+    await service.generate_feedback(user_id, question.id, selected_answer=1)
+
+    assert len(llm_usage_repo.events) == 1

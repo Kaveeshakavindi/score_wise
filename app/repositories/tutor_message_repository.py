@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date, datetime
 
 from sqlalchemy import column, func, select, true
 from sqlalchemy.dialects.postgresql import JSONB
@@ -30,6 +31,8 @@ class TutorMessageRepository:
         citations: list[dict] | None = None,
         selected_answer: int | None = None,
         is_correct: bool | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
     ) -> TutorMessage:
         message = TutorMessage(
             question_id=question_id,
@@ -39,6 +42,8 @@ class TutorMessageRepository:
             citations=citations,
             selected_answer=selected_answer,
             is_correct=is_correct,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
         self._session.add(message)
         await self._session.flush()
@@ -159,3 +164,23 @@ class TutorMessageRepository:
             .limit(limit)
         )
         return [(row.topic, row.count) for row in result.all()]
+
+    async def daily_counts_by_user(self, user_id: uuid.UUID, since: datetime) -> list[tuple[date, int]]:
+        """Explanations generated per day since `since`, for the dashboard's
+        "AI Tutor activity" engagement chart. Scoped to role="assistant" like
+        get_one/history, but NOT scoped to mistakes (is_correct) the way
+        top_cited_topics_by_user is -- this answers "did the student use the
+        tutor," not "did they review an error," so a correct-answer
+        explanation counts too. One batched GROUP BY, not a per-day query."""
+        day = func.date(TutorMessage.created_at)
+        result = await self._session.execute(
+            select(day.label("day"), func.count().label("count"))
+            .where(
+                TutorMessage.user_id == user_id,
+                TutorMessage.role == "assistant",
+                TutorMessage.created_at >= since,
+            )
+            .group_by(day)
+            .order_by(day)
+        )
+        return [(row.day, row.count) for row in result.all()]

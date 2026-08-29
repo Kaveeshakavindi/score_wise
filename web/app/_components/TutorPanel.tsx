@@ -74,9 +74,25 @@ function CitationChip({ index, citation }: { index: number; citation: Citation }
   );
 }
 
-// Explanation text first, citations as expandables at the end — the student
-// reads the reasoning before optionally digging into what grounded it.
-function ExplanationBody({ content, citations }: { content: string; citations?: Citation[] }) {
+// Explanation text first, citations as expandables, then (when known) what
+// this generation actually cost — a quiet footnote, not a headline number.
+// Token counts show as soon as the backend reports them; the dollar figure
+// only once app/llm/pricing.py has a real rate for the current model, so
+// this never shows a fabricated "$0.00" in the meantime.
+function ExplanationBody({
+  content,
+  citations,
+  inputTokens,
+  outputTokens,
+  estimatedCostUsd,
+}: {
+  content: string;
+  citations?: Citation[];
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  estimatedCostUsd?: number | null;
+}) {
+  const totalTokens = inputTokens != null && outputTokens != null ? inputTokens + outputTokens : null;
   return (
     <div className="flex flex-col gap-3">
       <div className="max-w-full text-sm text-text-dark">
@@ -89,6 +105,12 @@ function ExplanationBody({ content, citations }: { content: string; citations?: 
           ))}
         </div>
       )}
+      {totalTokens != null && (
+        <p className="text-xs text-text-muted">
+          {totalTokens.toLocaleString()} tokens
+          {estimatedCostUsd != null && <> · ${estimatedCostUsd.toFixed(4)}</>}
+        </p>
+      )}
     </div>
   );
 }
@@ -96,7 +118,14 @@ function ExplanationBody({ content, citations }: { content: string; citations?: 
 type ExplanationState =
   | { status: "idle" }
   | { status: "loading" }
-  | { status: "loaded"; content: string; citations: Citation[] }
+  | {
+      status: "loaded";
+      content: string;
+      citations: Citation[];
+      inputTokens: number | null;
+      outputTokens: number | null;
+      estimatedCostUsd: number | null;
+    }
   | { status: "error"; error: string };
 
 // Right-hand panel next to a result-screen question: starts as just an
@@ -123,7 +152,9 @@ export function QuestionExplanation({
         if (!res.ok) throw new Error((await res.json()).error ?? `Request failed (${res.status})`);
         return res.json();
       })
-      .then(({ content, citations }) => setState({ status: "loaded", content, citations }))
+      .then(({ content, citations, inputTokens, outputTokens, estimatedCostUsd }) =>
+        setState({ status: "loaded", content, citations, inputTokens, outputTokens, estimatedCostUsd }),
+      )
       .catch((err) => setState({ status: "error", error: err instanceof Error ? err.message : String(err) }));
   }
 
@@ -144,7 +175,15 @@ export function QuestionExplanation({
         <Bot size={16} strokeWidth={2} /> AI Tutor explanation
       </p>
       {state.status === "loading" && <ThinkingDots />}
-      {state.status === "loaded" && <ExplanationBody content={state.content} citations={state.citations} />}
+      {state.status === "loaded" && (
+        <ExplanationBody
+          content={state.content}
+          citations={state.citations}
+          inputTokens={state.inputTokens}
+          outputTokens={state.outputTokens}
+          estimatedCostUsd={state.estimatedCostUsd}
+        />
+      )}
       {state.status === "error" && (
         <div className="flex flex-col items-start gap-2">
           <p className="rounded-2xl bg-red-50 px-3 py-2 text-sm text-red-700">{state.error}</p>

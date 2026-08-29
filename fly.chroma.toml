@@ -1,0 +1,24 @@
+# Fly.io app config for self-hosted ChromaDB — the same chromadb/chroma:latest
+# image docker-compose.yml already runs locally, deployed as its own Fly app
+# so the API can reach it over Fly's private 6PN network as
+# "scorewise-chroma.internal:8000" without it ever being publicly reachable.
+#
+# Deliberately has NO [http_service] section: that's what keeps this
+# internet-unreachable by construction, rather than relying on a firewall
+# rule someone has to remember to add.
+#
+# Before first deploy, create the volume this mounts:
+#   fly volumes create chromadata --region sin --size 1 --app scorewise-chroma
+app = "scorewise-chroma"
+primary_region = "sin"
+
+[build]
+  image = "chromadb/chroma:latest"
+
+[[mounts]]
+  source = "chromadata"
+  destination = "/chroma/chroma"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

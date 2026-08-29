@@ -19,6 +19,7 @@ type TrendPoint = {
   createdAt: string;
 };
 type TopicCount = { topic: string; count: number };
+type DailyActivity = { date: string; count: number };
 type DashboardSummary = {
   overallCorrect: number;
   overallTotal: number;
@@ -30,6 +31,7 @@ type DashboardSummary = {
   followThroughRate: number;
   tutorHelpedCount: number;
   topTopics: TopicCount[];
+  tutorActivity: DailyActivity[];
 };
 type TutorHelpedQuestion = {
   questionId: string;
@@ -239,38 +241,42 @@ export default function DashboardPage() {
               <SubjectMeters subjects={summary.subjects} activeSubject={subjectFilter} />
             </div>
 
-            <div className={`${CARD} flex min-w-0 flex-col gap-1 p-6`}>
-              <h2 className="text-lg font-medium text-text-dark">Tutor helped with</h2>
-              <p className="mb-4 text-sm text-text-muted">Every question you&apos;ve reviewed AI Tutor feedback for</p>
+            <div className="flex min-w-0 flex-col gap-6">
+              <TutorActivityChart activity={summary.tutorActivity} />
 
-              {helpedError && <p className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{helpedError}</p>}
-              {!helpedError && helped.length === 0 && !helpedLoading && (
-                <p className="text-sm text-text-muted">
-                  Nothing here yet — review the AI Tutor feedback on a question on your next practice test, and
-                  it&apos;ll show up here for you to revisit.
-                </p>
-              )}
+              <div className={`${CARD} flex min-w-0 flex-col gap-1 p-6`}>
+                <h2 className="text-lg font-medium text-text-dark">Tutor helped with</h2>
+                <p className="mb-4 text-sm text-text-muted">Every question you&apos;ve reviewed AI Tutor feedback for</p>
 
-              <div className="flex flex-col">
-                {helped.map((h) => (
-                  <TutorHelpedRow
-                    key={h.questionId}
-                    item={h}
-                    expanded={expandedId === h.questionId}
-                    onToggle={() => setExpandedId((cur) => (cur === h.questionId ? null : h.questionId))}
-                  />
-                ))}
+                {helpedError && <p className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{helpedError}</p>}
+                {!helpedError && helped.length === 0 && !helpedLoading && (
+                  <p className="text-sm text-text-muted">
+                    Nothing here yet — review the AI Tutor feedback on a question on your next practice test, and
+                    it&apos;ll show up here for you to revisit.
+                  </p>
+                )}
+
+                <div className="flex flex-col">
+                  {helped.map((h) => (
+                    <TutorHelpedRow
+                      key={h.questionId}
+                      item={h}
+                      expanded={expandedId === h.questionId}
+                      onToggle={() => setExpandedId((cur) => (cur === h.questionId ? null : h.questionId))}
+                    />
+                  ))}
+                </div>
+
+                {helped.length < helpedTotal && (
+                  <button
+                    onClick={() => loadTutorHistory(helped.length, true)}
+                    disabled={helpedLoading}
+                    className="mt-3 self-start text-sm font-medium text-coral-dark hover:underline disabled:opacity-50"
+                  >
+                    {helpedLoading ? "Loading…" : `Load more (${helpedTotal - helped.length} left)`}
+                  </button>
+                )}
               </div>
-
-              {helped.length < helpedTotal && (
-                <button
-                  onClick={() => loadTutorHistory(helped.length, true)}
-                  disabled={helpedLoading}
-                  className="mt-3 self-start text-sm font-medium text-coral-dark hover:underline disabled:opacity-50"
-                >
-                  {helpedLoading ? "Loading…" : `Load more (${helpedTotal - helped.length} left)`}
-                </button>
-              )}
             </div>
           </div>
 
@@ -440,6 +446,116 @@ function TrendChart({ trend }: { trend: TrendPoint[] }) {
             <div className="text-white/70">
               {hovered.t.subject} · {hovered.t.year} · {formatDate(hovered.t.createdAt)}
             </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Study-habit signal, not a cost metric — every explanation the student has
+// viewed counts (correct, wrong, or missed), so this is about "did I use
+// the tutor," never tokens or dollars. Same SVG-hand-rolled + hover-tooltip
+// approach as TrendChart above, single coral accent since there's only one
+// series (a legend/second hue would imply a comparison that isn't here).
+function TutorActivityChart({ activity }: { activity: DailyActivity[] }) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+
+  const width = 340;
+  const height = 120;
+  const padLeft = 8;
+  const padRight = 8;
+  const padTop = 10;
+  const padBottom = 22;
+  const plotW = width - padLeft - padRight;
+  const plotH = height - padTop - padBottom;
+  const baseline = padTop + plotH;
+
+  const n = activity.length;
+  const gap = 4;
+  const barWidth = n > 0 ? (plotW - gap * (n - 1)) / n : 0;
+  const maxCount = Math.max(1, ...activity.map((a) => a.count));
+
+  const bars = activity.map((a, i) => {
+    const x = padLeft + i * (barWidth + gap);
+    const barHeight = (a.count / maxCount) * plotH;
+    const y = baseline - barHeight;
+    return { x, y, barHeight, a };
+  });
+
+  const totalCount = activity.reduce((sum, a) => sum + a.count, 0);
+  const labelIndices = new Set(pickLabelIndices(n));
+  const hovered = hoverIndex !== null ? bars[hoverIndex] : null;
+
+  function handlePointerMove(e: React.PointerEvent<SVGRectElement>) {
+    const svg = svgRef.current;
+    if (!svg || bars.length === 0) return;
+    const rect = svg.getBoundingClientRect();
+    const relX = ((e.clientX - rect.left) / rect.width) * width;
+    const i = Math.min(n - 1, Math.max(0, Math.floor((relX - padLeft) / (barWidth + gap))));
+    setHoverIndex(i);
+  }
+
+  return (
+    <div className={`${CARD} p-6`}>
+      <div className="mb-4 flex items-baseline justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-medium text-text-dark">AI Tutor activity</h2>
+          <p className="text-sm text-text-muted">Explanations viewed, last 14 days</p>
+        </div>
+        <span className="text-2xl font-medium text-text-dark">{totalCount}</span>
+      </div>
+
+      <div className="relative">
+        <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} className="block w-full overflow-visible">
+          <line x1={padLeft} y1={baseline} x2={width - padRight} y2={baseline} stroke="#e7e5e4" strokeWidth={1} />
+
+          {bars.map((b, i) =>
+            labelIndices.has(i) ? (
+              <text key={i} x={b.x + barWidth / 2} y={height - 6} textAnchor="middle" fontSize={9} fill="#78716c">
+                {formatDate(b.a.date)}
+              </text>
+            ) : null,
+          )}
+
+          {bars.map((b, i) => (
+            <rect
+              key={i}
+              x={b.x}
+              y={b.barHeight > 0 ? b.y : baseline - 1.5}
+              width={barWidth}
+              height={Math.max(b.barHeight, 1.5)}
+              rx={2}
+              fill="#e06a5c"
+              opacity={hoverIndex === null || hoverIndex === i ? 1 : 0.35}
+            />
+          ))}
+
+          <rect
+            x={padLeft}
+            y={0}
+            width={plotW}
+            height={height}
+            fill="transparent"
+            onPointerMove={handlePointerMove}
+            onPointerLeave={() => setHoverIndex(null)}
+          />
+        </svg>
+
+        {hovered && (
+          <div
+            className="pointer-events-none absolute rounded-xl bg-text-dark px-3 py-2 text-xs text-white shadow-soft"
+            style={{
+              left: `${((hovered.x + barWidth / 2) / width) * 100}%`,
+              top: `${(hovered.y / height) * 100}%`,
+              transform: "translate(-50%, -115%)",
+            }}
+          >
+            <div className="font-semibold">
+              {hovered.a.count} {hovered.a.count === 1 ? "explanation" : "explanations"}
+            </div>
+            <div className="text-white/70">{formatDate(hovered.a.date)}</div>
           </div>
         )}
       </div>

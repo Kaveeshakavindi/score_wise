@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -42,6 +43,9 @@ async def test_get_summary_empty_for_new_user(dashboard) -> None:
     assert summary.follow_through_rate == 0.0
     assert summary.tutor_helped_count == 0
     assert summary.top_topics == []
+    # Zero-filled even with no activity at all -- a fixed 14-day window.
+    assert len(summary.tutor_activity) == 14
+    assert all(a.count == 0 for a in summary.tutor_activity)
 
 
 async def test_get_summary_aggregates_across_subjects_and_orders_trend_oldest_first(dashboard) -> None:
@@ -122,6 +126,42 @@ async def test_get_summary_ranks_top_cited_topics(dashboard) -> None:
     summary = await service.get_summary(user_id)
 
     assert [(t.topic, t.count) for t in summary.top_topics] == [("Projectile motion", 2), ("Equilibrium", 1)]
+
+
+async def test_get_summary_tutor_activity_buckets_by_day_and_zero_fills(dashboard) -> None:
+    service, paper_repo, question_repo, attempt_repo, tutor_repo = dashboard
+    user_id = uuid.uuid4()
+    paper = await paper_repo.create("Physics", 2022)
+    q1 = await question_repo.create(
+        paper.id, subject="Physics", year=2022, question_number=1, question_text="Q1",
+        options={"A": "a"}, correct_answer=0,
+    )
+    q2 = await question_repo.create(
+        paper.id, subject="Physics", year=2022, question_number=2, question_text="Q2",
+        options={"A": "a"}, correct_answer=0,
+    )
+    now = datetime.now(timezone.utc)
+
+    today_msg = await tutor_repo.create(question_id=q1.id, user_id=user_id, role="assistant", content="a", is_correct=True)
+    today_msg.created_at = now
+
+    eight_days_ago = await tutor_repo.create(question_id=q2.id, user_id=user_id, role="assistant", content="b", is_correct=False)
+    eight_days_ago.created_at = now - timedelta(days=8)
+
+    # Outside the 14-day window -- must not appear at all, not even as a
+    # zero-count day (the window is fixed-size, not "earliest activity").
+    too_old = await tutor_repo.create(question_id=q1.id, user_id=user_id, role="assistant", content="c", is_correct=True)
+    too_old.created_at = now - timedelta(days=20)
+
+    summary = await service.get_summary(user_id)
+
+    assert len(summary.tutor_activity) == 14
+    assert summary.tutor_activity[-1].day == now.date()
+    assert summary.tutor_activity[-1].count == 1
+    assert summary.tutor_activity[-9].day == (now - timedelta(days=8)).date()
+    assert summary.tutor_activity[-9].count == 1
+    # Every other day in the window is zero-filled.
+    assert sum(a.count for a in summary.tutor_activity) == 2
 
 
 async def test_list_tutor_history_includes_only_discussed_questions(dashboard) -> None:

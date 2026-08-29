@@ -39,6 +39,16 @@ class TutorMessageOut(BaseModel):
     # Whether that selected_answer was correct. Null only for legacy rows
     # created before this column existed.
     is_correct: bool | None = None
+    # Real usage from the Anthropic call that generated this explanation.
+    # Null for rows created before this tracking existed. Maps straight off
+    # TutorMessage's columns via from_attributes.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    # NOT auto-computed here (this schema has no access to which model/rate
+    # applies) -- the router fills this in via app/llm/pricing.py after
+    # validating the rest of the row. Null whenever input/output tokens are
+    # unknown, or the current model isn't in MODEL_PRICING yet.
+    estimated_cost_usd: float | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
