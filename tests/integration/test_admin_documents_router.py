@@ -7,10 +7,10 @@ import pytest
 
 import app.services.syllabus_ingestion_service as ingestion_module
 from app.core.config import get_settings
-from app.core.deps import get_current_user, get_redis, get_syllabus_document_repository
+from app.core.deps import get_current_user, get_document_extraction_service, get_redis, get_syllabus_document_repository
 from app.main import app
 from app.vectorstore import chroma_client as chroma_client_module
-from tests.fakes import FakeRedis, FakeSyllabusDocumentRepository
+from tests.fakes import FakeDocumentExtractionService, FakeRedis, FakeSyllabusDocumentRepository
 
 _HEADERS = {"Authorization": "Bearer test-token"}
 
@@ -21,11 +21,13 @@ async def client(test_user, monkeypatch):
 
     app.dependency_overrides[get_current_user] = lambda: test_user
     app.dependency_overrides[get_syllabus_document_repository] = lambda: repo
+    app.dependency_overrides[get_document_extraction_service] = lambda: FakeDocumentExtractionService(
+        text="syllabus content " * 100
+    )
     app.dependency_overrides[get_redis] = lambda: FakeRedis()
 
     monkeypatch.setattr(ingestion_module, "get_embedder", lambda model_name: _async_value(object()))
     monkeypatch.setattr(ingestion_module, "embed_documents", lambda embedder, texts: _async_value([[0.1] for _ in texts]))
-    monkeypatch.setattr(ingestion_module, "extract_text_from_pdf", lambda data: "syllabus content " * 100)
 
     async def _fake_upsert(settings, *, ids, embeddings, documents, metadatas):
         pass

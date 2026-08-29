@@ -30,6 +30,21 @@ class Settings(BaseSettings):
     jwt_algorithm: str = Field("HS256", alias="JWT_ALGORITHM")
     access_token_expire_minutes: int = Field(30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
     refresh_token_expire_days: int = Field(14, alias="REFRESH_TOKEN_EXPIRE_DAYS")
+    password_reset_token_expire_minutes: int = Field(60, alias="PASSWORD_RESET_TOKEN_EXPIRE_MINUTES")
+    # The backend has otherwise never needed to know the frontend's own
+    # origin — needed here to build the link a password-reset email points at.
+    frontend_base_url: str = Field("http://localhost:3000", alias="FRONTEND_BASE_URL")
+
+    # --- Email (AWS SES) — all optional so the app runs fine unconfigured;
+    # only password reset needs these, validated lazily where used
+    # (app/services/email_service.py) rather than at process startup. Access
+    # key/secret left optional so boto3's default credential chain (env vars,
+    # ~/.aws/credentials, an IAM role in real deployment) can be used instead
+    # of hardcoding keys here. ---
+    aws_region: str | None = Field(None, alias="AWS_REGION")
+    aws_access_key_id: str | None = Field(None, alias="AWS_ACCESS_KEY_ID")
+    aws_secret_access_key: str | None = Field(None, alias="AWS_SECRET_ACCESS_KEY")
+    email_from: str | None = Field(None, alias="EMAIL_FROM")
 
     # --- CORS ---
     cors_origins: str = Field("", alias="CORS_ORIGINS")

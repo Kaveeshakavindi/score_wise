@@ -10,6 +10,11 @@ const PRIMARY_PILL_SM =
 // the exam app's Result screen — so there's always a way back to the rest of
 // the site without breaking the anchor links, which always point at "/"
 // regardless of which route they're clicked from.
+//
+// Deliberately static — no session check here. "Dashboard" is a plain link;
+// middleware.ts is what decides what happens next (straight to /dashboard in
+// a valid session, or bounced to /login otherwise). Account info (name,
+// logging out) lives on the dashboard page itself, not in this shared bar.
 export function Nav() {
   return (
     <div className="fixed inset-x-4 top-4 z-40 mx-auto flex max-w-3xl items-center justify-between rounded-full border border-stone-100 bg-white/70 px-4 py-2.5 shadow-soft backdrop-blur-[20px]">
@@ -27,7 +32,11 @@ export function Nav() {
         <a href="/#why-it-helps" className="hidden text-sm text-text-muted hover:text-text-dark sm:inline">
           Why it helps
         </a>
-        <Link href="/exam" className={PRIMARY_PILL_SM}>
+        <Link href="/dashboard" className="text-sm text-text-muted hover:text-text-dark">
+          Dashboard
+        </Link>
+
+        <Link href="/exams" className={PRIMARY_PILL_SM}>
           Start Exam
         </Link>
       </div>

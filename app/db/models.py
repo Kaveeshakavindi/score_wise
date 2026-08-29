@@ -22,10 +22,18 @@ class User(Base):
     nickname: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     age: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Nullable at the DB level only for safe migration over any pre-existing
+    # rows — required for every new registration via RegisterRequest.email
+    # (app/schemas/auth.py). Lowercased before storage; needed for password
+    # reset (there's nowhere to send a reset link without it).
+    email: Mapped[str | None] = mapped_column(Text, unique=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
     sessions: Mapped[list["ChatSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    password_reset_tokens: Mapped[list["PasswordResetToken"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class ChatSession(Base):
@@ -111,6 +119,26 @@ class RefreshToken(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="refresh_tokens")
+
+
+class PasswordResetToken(Base):
+    """Mirrors RefreshToken field-for-field except `revoked_at` -> `used_at` —
+    a reset token is *used* once, not revoked/rotated. Opaque token, stored
+    only as its SHA-256 hash (app/core/security.py's existing
+    generate_refresh_token/hash_refresh_token, reused as-is)."""
+
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    user: Mapped["User"] = relationship(back_populates="password_reset_tokens")
 
 
 class ToolInvocation(Base):
@@ -265,10 +293,15 @@ class AttemptAnswer(Base):
 
 
 class TutorMessage(Base):
-    """One turn of the question-scoped AI tutor chat. Threaded by
-    (question_id, user_id) — there's no separate session concept here, unlike
-    the generic chatbot: each student has exactly one implicit tutor thread
-    per question."""
+    """One auto-generated feedback message for a (question, user) pair —
+    explaining why the student's recorded answer was correct, wrong, or
+    (if left blank) what they needed to know. Not a chat: there is at most
+    one row per (question_id, user_id, selected_answer), created the first
+    time the student views that question's result with that answer, and
+    returned as-is on every later view of that same answer. A different
+    selected_answer (e.g. a retake where the student picked something else)
+    always generates and stores a new row rather than reusing an old one
+    (see TutorRagService.generate_feedback)."""
 
     __tablename__ = "tutor_messages"
 
@@ -279,16 +312,75 @@ class TutorMessage(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
+    # Always "assistant" for rows created by the current feedback flow; kept
+    # (rather than dropped) so pre-existing chat-turn rows from before this
+    # redesign still load without a migration rewriting historical data.
     role: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    # Only ever set on role="assistant" rows: the syllabus chunks retrieved
-    # from ChromaDB that grounded this reply (document/topic/snippet), so the
-    # UI can show "citations" proving the answer isn't unsourced, and so
-    # GET .../tutor/history can still render them after a page reload.
-    citations: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+    # The syllabus chunks retrieved from ChromaDB that grounded this
+    # feedback (document/topic/snippet), so the UI can show "citations"
+    # proving the explanation isn't unsourced. none_as_null=True: SQLAlchemy's
+    # JSON/JSONB type otherwise encodes a Python None as the JSON scalar
+    # `null` *inside* the column instead of a real SQL NULL, which passes
+    # `citations IS NOT NULL` checks (get_one, top_cited_topics_by_user) and
+    # crashes top_cited_topics_by_user's jsonb_array_elements() lateral join
+    # ("cannot extract elements from a scalar") the moment any row has no
+    # citations. A genuine SQL NULL is what every reader here already
+    # assumes "no citations" looks like.
+    citations: Mapped[list[dict] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    # The option the student had selected (mirrors AttemptSubmitRequest's
+    # 0-based index convention); null if they left the question blank.
+    selected_answer: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Whether that selected_answer was correct (also true for accept_all
+    # voided questions). Null only for legacy pre-redesign rows. Lets
+    # dashboard analytics (follow-through rate, top-cited topics) stay
+    # scoped to mistakes instead of counting every question the student
+    # viewed feedback for.
+    is_correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # The Anthropic call's own reported usage for this generation (see
+    # TutorRagService.generate_feedback / app/llm/pricing.py) — lets the UI
+    # show this explanation's real token cost with no join. Null for rows
+    # created before this tracking existed; never backfilled with a guess.
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
     __table_args__ = (
         CheckConstraint("role IN ('user', 'assistant')", name="tutor_messages_role_check"),
         Index("idx_tutor_messages_question_user_created", "question_id", "user_id", created_at.asc()),
+    )
+
+
+class LlmUsageEvent(Base):
+    """One row per LLM call, across every feature (tutor feedback, chat,
+    title generation) — an append-only ledger independent of any feature's
+    own tables, so a per-user daily token budget (see
+    app.core.deps.token_budget_check) and any future cross-feature usage
+    view don't need to know how each feature stores its own messages.
+    Recorded best-effort right after each call succeeds; a logging failure
+    here must never break the feature that triggered it (mirrors
+    TutorRagService._retrieve_context's ChromaDB fallback)."""
+
+    __tablename__ = "llm_usage_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Nullable: a future system/background call (e.g. a batch job) has no
+    # attributable user, but should still be counted somewhere.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    feature: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Ties this row back to the structured request log (app/core/logging.py's
+    # get_request_id()) for cross-referencing, not a foreign key — nothing
+    # else in the DB is keyed by request_id.
+    request_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_llm_usage_events_user_created", "user_id", created_at.desc()),
+        Index("idx_llm_usage_events_feature", "feature"),
     )

@@ -5,7 +5,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Paper
+from app.db.models import Paper, Question
 
 
 class PaperRepository:
@@ -28,3 +28,16 @@ class PaperRepository:
 
     async def get_by_id(self, paper_id: uuid.UUID) -> Paper | None:
         return await self._session.get(Paper, paper_id)
+
+    async def count_questions_by_paper_ids(self, paper_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """Batched question count per paper, for a page of list_by_subject
+        results — one query regardless of how many papers are on the page,
+        never N+1 (mirrors QuestionRepository.get_many_by_ids's batching)."""
+        if not paper_ids:
+            return {}
+        result = await self._session.execute(
+            select(Question.paper_id, func.count())
+            .where(Question.paper_id.in_(paper_ids))
+            .group_by(Question.paper_id)
+        )
+        return {paper_id: count for paper_id, count in result.all()}

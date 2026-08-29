@@ -43,7 +43,7 @@ Everything needed to build, run, and deploy the backend — the legacy CLI core 
 
 | Component | Name/Tool | Version (if pinned) | Purpose | Required/Optional |
 |---|---|---|---|---|
-| PDF text extraction | pypdf | 6.15.0 | Extracts raw text from uploaded syllabus PDFs (`app/services/pdf_extraction.py`), `POST /api/v1/admin/documents` | Required (ScoreWise admin upload) |
+| PDF text extraction | `document_extraction` (root-level package; pypdf 6.15.0 + anthropic 0.120.2) | — | Two-tier extraction for uploaded syllabus PDFs: pypdf's text layer when a completeness heuristic accepts it, a one-shot Claude vision transcription otherwise (scanned/partially scanned PDFs); wired into `SyllabusIngestionService` via `app/core/deps.py::get_document_extraction_service`, used by `POST /api/v1/admin/documents` | Required (ScoreWise admin upload) |
 
 ## Caching / Rate Limiting
 

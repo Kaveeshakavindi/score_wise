@@ -2,30 +2,29 @@ import { NextResponse } from "next/server";
 import { backendFetch } from "@/lib/backend";
 import { orderedOptionKeys } from "@/lib/options";
 
-// GET /api/questions?limit=2 — the first N questions of the first available
-// paper, in display order, for the timed-test flow on the practice page.
-// `correct_answer` is never exposed here (the backend's own QuestionOut
-// omits it too) — only /api/submit learns it, after grading.
+// GET /api/questions?paperId=... — every question in that specific paper, in
+// display order, for the timed-test flow at /exam/[paperId]. QuestionOut
+// already carries subject/year/paper_id per question (denormalized on the
+// backend's Question model), so this needs only one backend call — no
+// separate papers fetch. `correct_answer` is never exposed here (the
+// backend's own QuestionOut omits it too) — only /api/submit learns it,
+// after grading.
 export async function GET(request: Request) {
-  const limit = Number(new URL(request.url).searchParams.get("limit") ?? "2");
-
-  const papersRes = await backendFetch("/api/v1/papers?limit=1&offset=0");
-  if (!papersRes.ok) {
-    return NextResponse.json({ error: `Failed to list papers (${papersRes.status})` }, { status: 502 });
-  }
-  const papers = await papersRes.json();
-  const paper = papers.items?.[0];
-  if (!paper) {
-    return NextResponse.json({ error: "No papers found. Seed one first." }, { status: 404 });
+  const paperId = new URL(request.url).searchParams.get("paperId");
+  if (!paperId) {
+    return NextResponse.json({ error: "paperId is required." }, { status: 400 });
   }
 
-  const questionsRes = await backendFetch(`/api/v1/papers/${paper.id}/questions?limit=${limit}&offset=0`);
+  // 200 is the backend's own page-size cap (app/routers/papers.py) —
+  // comfortably covers any paper at today's content scale; a paper bigger
+  // than that would need real pagination here, not a concern yet.
+  const questionsRes = await backendFetch(`/api/v1/papers/${paperId}/questions?limit=200&offset=0`);
   if (!questionsRes.ok) {
-    return NextResponse.json({ error: `Failed to list questions (${questionsRes.status})` }, { status: 502 });
+    return NextResponse.json({ error: `Failed to load questions (${questionsRes.status})` }, { status: questionsRes.status });
   }
   const questions = await questionsRes.json();
   if (!questions.items || questions.items.length === 0) {
-    return NextResponse.json({ error: "Paper has no questions." }, { status: 404 });
+    return NextResponse.json({ error: "This paper has no questions." }, { status: 404 });
   }
 
   return NextResponse.json({
@@ -33,9 +32,9 @@ export async function GET(request: Request) {
       const options = question.options as Record<string, string>;
       const keys = orderedOptionKeys(options);
       return {
-        paperId: paper.id,
-        subject: paper.subject,
-        year: paper.year,
+        paperId: question.paper_id,
+        subject: question.subject,
+        year: question.year,
         questionId: question.id,
         questionNumber: question.question_number,
         questionText: question.question_text,

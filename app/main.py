@@ -15,6 +15,7 @@ from app.routers import (
     admin_documents,
     attempts,
     auth,
+    dashboard,
     documents,
     health,
     messages,
@@ -22,6 +23,7 @@ from app.routers import (
     sessions,
     tools,
     tutor,
+    usage,
     ws_chat,
 )
 
@@ -85,6 +87,8 @@ def create_app() -> FastAPI:
     app.include_router(attempts.router)
     app.include_router(tutor.router)
     app.include_router(admin_documents.router)
+    app.include_router(dashboard.router)
+    app.include_router(usage.router)
 
     return app
 

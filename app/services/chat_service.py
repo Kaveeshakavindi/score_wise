@@ -8,8 +8,10 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.tools import StructuredTool
 
 from app.core.config import Settings
+from app.core.logging import get_request_id, logger
 from app.db.models import Message
-from app.llm.anthropic_client import astream_text_events, get_llm_with_tools, get_text_content
+from app.llm.anthropic_client import astream_text_events, get_llm_with_tools, get_text_content, get_usage
+from app.repositories.llm_usage_repository import LlmUsageRepository
 from app.repositories.message_repository import MessageRepository
 from app.repositories.session_repository import SessionRepository
 from app.services.rag_service import RagService
@@ -43,6 +45,7 @@ class ChatService:
         rag_service: RagService,
         tool_service: ToolService,
         title_service: TitleService,
+        llm_usage_repo: LlmUsageRepository,
         settings: Settings,
     ) -> None:
         self._messages = message_repo
@@ -50,7 +53,23 @@ class ChatService:
         self._rag = rag_service
         self._tools = tool_service
         self._titles = title_service
+        self._llm_usage = llm_usage_repo
         self._settings = settings
+
+    async def _record_usage(self, response: BaseMessage) -> None:
+        # user_id=None: same reasoning as TitleService._record_usage — this
+        # chat feature has no user-ownership model resolved at this layer to
+        # attribute the call to. Still counted toward total app-wide spend.
+        usage = get_usage(response)
+        if usage is None:
+            return
+        try:
+            await self._llm_usage.record(
+                user_id=None, feature="chat", model=self._settings.anthropic_model, usage=usage,
+                request_id=get_request_id(),
+            )
+        except Exception as exc:
+            logger.warning("llm_usage_record_failed", feature="chat", error=str(exc))
 
     # --- HTTP: POST /sessions/{id}/messages — full turn, synchronous ---
 
@@ -67,6 +86,7 @@ class ChatService:
         tool_call_results: list[ToolCallResult] = []
 
         response: AIMessage = await llm.ainvoke(messages)
+        await self._record_usage(response)
         while getattr(response, "tool_calls", None):
             messages.append(response)
             used_indexing = False
@@ -81,6 +101,7 @@ class ChatService:
                 if refreshed:
                     messages.append(_context_reminder(refreshed))
             response = await llm.ainvoke(messages)
+            await self._record_usage(response)
 
         response_text = get_text_content(response).strip()
         assistant_message = await self._messages.create(session_id, "assistant", response_text)

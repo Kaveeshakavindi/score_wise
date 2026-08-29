@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 from langchain_anthropic import ChatAnthropic
@@ -46,6 +47,32 @@ def get_text_content(message: BaseMessage) -> str:
                 parts.append(block.get("text", ""))
         return "".join(parts)
     return str(content) if content else ""
+
+
+@dataclass(frozen=True)
+class Usage:
+    """Token usage for one LLM call, in the provider-agnostic shape the rest
+    of the app deals with (app/llm/pricing.py, LlmUsageEvent)."""
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
+def get_usage(message: BaseMessage) -> Usage | None:
+    """Extracts real token usage from a response message's usage_metadata --
+    Anthropic's Messages API reports exact counts, so nothing here estimates
+    with a tokenizer. None if the message carries no usage_metadata (e.g. a
+    non-AIMessage, or a provider/version that doesn't populate it) — callers
+    must treat that as "unknown", not zero."""
+    usage = getattr(message, "usage_metadata", None)
+    if not usage:
+        return None
+    return Usage(
+        input_tokens=usage.get("input_tokens", 0),
+        output_tokens=usage.get("output_tokens", 0),
+        total_tokens=usage.get("total_tokens", 0),
+    )
 
 
 async def astream_text_events(llm: ChatAnthropic, messages: list[BaseMessage]) -> AsyncIterator[dict[str, Any]]:

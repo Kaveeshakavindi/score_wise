@@ -3,12 +3,13 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from document_extraction import DocumentExtractionError, ExtractionMethod, ExtractionResult
 
 import app.services.syllabus_ingestion_service as ingestion_module
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.services.syllabus_ingestion_service import SyllabusIngestionService
 from app.vectorstore import chroma_client as chroma_client_module
-from tests.fakes import FakeSyllabusDocumentRepository
+from tests.fakes import FakeDocumentExtractionService, FakeSyllabusDocumentRepository
 
 
 async def _fake_get_embedder(model_name: str):
@@ -22,13 +23,14 @@ async def _fake_embed_documents(embedder, texts: list[str]) -> list[list[float]]
 @pytest.fixture
 def ingestion(settings, monkeypatch):
     repo = FakeSyllabusDocumentRepository()
-    service = SyllabusIngestionService(repo, settings)
+    document_extraction = FakeDocumentExtractionService(text="a" * 1000)
+    service = SyllabusIngestionService(repo, document_extraction, settings)
 
-    # Embedder and PDF extraction are swapped for fakes so this never loads
-    # the real sentence-transformers model or parses real PDF bytes (§13).
+    # Embedder is swapped for a fake so this never loads the real
+    # sentence-transformers model (§13); document extraction is already a
+    # fake (never parses real PDF bytes or calls Claude).
     monkeypatch.setattr(ingestion_module, "get_embedder", _fake_get_embedder)
     monkeypatch.setattr(ingestion_module, "embed_documents", _fake_embed_documents)
-    monkeypatch.setattr(ingestion_module, "extract_text_from_pdf", lambda data: "a" * 1000)
 
     upserts: list[dict] = []
     deletes: list[str] = []
@@ -109,3 +111,42 @@ async def test_delete_missing_document_raises_not_found(ingestion) -> None:
     service, _, _, _ = ingestion
     with pytest.raises(NotFoundError):
         await service.delete_document(uuid.uuid4())
+
+
+async def test_extraction_failure_is_translated_to_validation_error(ingestion) -> None:
+    """Covers both DocumentExtractionService failure modes -- unreadable
+    file and a failed vision fallback call -- since both raise the same
+    DocumentExtractionError and are translated identically here."""
+    service, _, _, _ = ingestion
+
+    class _FailingExtraction:
+        async def extract(self, pdf_bytes: bytes, filename: str):
+            raise DocumentExtractionError("not a readable PDF")
+
+    service._document_extraction = _FailingExtraction()
+
+    with pytest.raises(ValidationError):
+        await service.ingest_pdf(document_id=None, filename="a.pdf", subject="Physics", topic=None, pdf_bytes=b"x")
+
+
+async def test_blank_extraction_result_raises_validation_error(ingestion) -> None:
+    """Even a successful extraction (no exception) with empty/whitespace-only
+    text -- e.g. Claude transcribed a genuinely blank scanned page -- must
+    not silently proceed to chunk/embed/store nothing."""
+    service, _, _, _ = ingestion
+
+    class _BlankExtraction:
+        async def extract(self, pdf_bytes: bytes, filename: str) -> ExtractionResult:
+            return ExtractionResult(
+                text="   ",
+                method=ExtractionMethod.VISION,
+                raw_pdf_bytes=pdf_bytes,
+                page_count=1,
+                confidence_hint=None,
+                filename=filename,
+            )
+
+    service._document_extraction = _BlankExtraction()
+
+    with pytest.raises(ValidationError):
+        await service.ingest_pdf(document_id=None, filename="a.pdf", subject="Physics", topic=None, pdf_bytes=b"x")

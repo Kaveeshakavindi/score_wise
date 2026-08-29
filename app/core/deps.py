@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Annotated
 from uuid import UUID
@@ -16,10 +17,13 @@ from app.core.exceptions import RateLimitedError, UnauthorizedError
 from app.core.security import decode_access_token
 from app.db.base import get_db_session
 from app.db.models import User
+from document_extraction import DocumentExtractionService
+from app.repositories.llm_usage_repository import LlmUsageRepository
 from app.repositories.message_repository import MessageRepository
 from app.repositories.rag_chunk_repository import RagChunkRepository
 from app.repositories.attempt_repository import AttemptRepository
 from app.repositories.paper_repository import PaperRepository
+from app.repositories.password_reset_token_repository import PasswordResetTokenRepository
 from app.repositories.question_repository import QuestionRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.session_repository import SessionRepository
@@ -30,6 +34,8 @@ from app.repositories.user_repository import UserRepository
 from app.services.attempt_service import AttemptService
 from app.services.auth_service import AuthService
 from app.services.chat_service import ChatService
+from app.services.dashboard_service import DashboardService
+from app.services.email_service import EmailSender, SesEmailSender
 from app.services.paper_service import PaperService
 from app.services.rag_service import RagService
 from app.services.session_service import SessionService
@@ -91,6 +97,10 @@ def get_refresh_token_repository(db: DbSession) -> RefreshTokenRepository:
     return RefreshTokenRepository(db)
 
 
+def get_password_reset_token_repository(db: DbSession) -> PasswordResetTokenRepository:
+    return PasswordResetTokenRepository(db)
+
+
 def get_tool_invocation_repository(db: DbSession) -> ToolInvocationRepository:
     return ToolInvocationRepository(db)
 
@@ -118,15 +128,25 @@ def get_tutor_message_repository(db: DbSession) -> TutorMessageRepository:
     return TutorMessageRepository(db)
 
 
+def get_llm_usage_repository(db: DbSession) -> LlmUsageRepository:
+    return LlmUsageRepository(db)
+
+
 # --- Services ---
+
+
+def get_email_sender(settings: SettingsDep) -> EmailSender:
+    return SesEmailSender(settings)
 
 
 def get_auth_service(
     user_repo: Annotated[UserRepository, Depends(get_user_repository)],
     refresh_token_repo: Annotated[RefreshTokenRepository, Depends(get_refresh_token_repository)],
+    password_reset_token_repo: Annotated[PasswordResetTokenRepository, Depends(get_password_reset_token_repository)],
+    email_sender: Annotated[EmailSender, Depends(get_email_sender)],
     settings: SettingsDep,
 ) -> AuthService:
-    return AuthService(user_repo, refresh_token_repo, settings)
+    return AuthService(user_repo, refresh_token_repo, password_reset_token_repo, email_sender, settings)
 
 
 def get_session_service(
@@ -150,8 +170,20 @@ def get_tool_service(
     return ToolService(rag_service, invocation_repo, settings)
 
 
-def get_title_service(settings: SettingsDep) -> TitleService:
-    return TitleService(settings)
+def get_title_service(
+    settings: SettingsDep, llm_usage_repo: Annotated[LlmUsageRepository, Depends(get_llm_usage_repository)]
+) -> TitleService:
+    return TitleService(settings, llm_usage_repo)
+
+
+def get_document_extraction_service(settings: SettingsDep) -> DocumentExtractionService:
+    # Adapts app Settings -> the package's plain constructor args; the
+    # package itself has no idea this app (or Settings) exists, which is
+    # what keeps it reusable outside this codebase.
+    return DocumentExtractionService(
+        anthropic_api_key=settings.anthropic_api_key,
+        anthropic_model=settings.anthropic_model,
+    )
 
 
 def get_chat_service(
@@ -160,9 +192,10 @@ def get_chat_service(
     rag_service: Annotated[RagService, Depends(get_rag_service)],
     tool_service: Annotated[ToolService, Depends(get_tool_service)],
     title_service: Annotated[TitleService, Depends(get_title_service)],
+    llm_usage_repo: Annotated[LlmUsageRepository, Depends(get_llm_usage_repository)],
     settings: SettingsDep,
 ) -> ChatService:
-    return ChatService(message_repo, session_repo, rag_service, tool_service, title_service, settings)
+    return ChatService(message_repo, session_repo, rag_service, tool_service, title_service, llm_usage_repo, settings)
 
 
 # --- Services: ScoreWise ---
@@ -185,18 +218,28 @@ def get_attempt_service(
 
 def get_syllabus_ingestion_service(
     syllabus_document_repo: Annotated[SyllabusDocumentRepository, Depends(get_syllabus_document_repository)],
+    document_extraction: Annotated[DocumentExtractionService, Depends(get_document_extraction_service)],
     settings: SettingsDep,
 ) -> SyllabusIngestionService:
-    return SyllabusIngestionService(syllabus_document_repo, settings)
+    return SyllabusIngestionService(syllabus_document_repo, document_extraction, settings)
+
+
+def get_dashboard_service(
+    attempt_repo: Annotated[AttemptRepository, Depends(get_attempt_repository)],
+    tutor_message_repo: Annotated[TutorMessageRepository, Depends(get_tutor_message_repository)],
+    question_repo: Annotated[QuestionRepository, Depends(get_question_repository)],
+) -> DashboardService:
+    return DashboardService(attempt_repo, tutor_message_repo, question_repo)
 
 
 def get_tutor_rag_service(
     question_repo: Annotated[QuestionRepository, Depends(get_question_repository)],
     tutor_message_repo: Annotated[TutorMessageRepository, Depends(get_tutor_message_repository)],
     syllabus_document_repo: Annotated[SyllabusDocumentRepository, Depends(get_syllabus_document_repository)],
+    llm_usage_repo: Annotated[LlmUsageRepository, Depends(get_llm_usage_repository)],
     settings: SettingsDep,
 ) -> TutorRagService:
-    return TutorRagService(question_repo, tutor_message_repo, syllabus_document_repo, settings)
+    return TutorRagService(question_repo, tutor_message_repo, syllabus_document_repo, llm_usage_repo, settings)
 
 
 # --- Auth ---
@@ -250,6 +293,39 @@ def rate_limit_per_user(scope: str, limit: int, window_s: int = 60):
     ) -> None:
         key = f"ratelimit:{scope}:user:{current_user.id}"
         await _check_rate_limit(redis_client, key, limit, window_s)
+
+    return _dependency
+
+
+def _seconds_until_next_utc_midnight(now: datetime) -> int:
+    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(int((tomorrow - now).total_seconds()), 1)
+
+
+def token_budget_check(feature: str):
+    """Per-user daily token budget, opt-in: a no-op unless
+    settings.daily_token_budget is explicitly set (unset today in every
+    environment — see software.md's token-usage-management plan). Sums
+    today's usage from the llm_usage_events ledger rather than a separate
+    Redis counter, so there's one source of truth for "how many tokens has
+    this user used" shared with GET /api/v1/usage/me."""
+
+    async def _dependency(
+        current_user: CurrentUser,
+        settings: SettingsDep,
+        llm_usage_repo: Annotated[LlmUsageRepository, Depends(get_llm_usage_repository)],
+    ) -> None:
+        budget = settings.daily_token_budget
+        if budget is None:
+            return
+        now = datetime.now(timezone.utc)
+        since = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        used = await llm_usage_repo.sum_tokens_since(current_user.id, since)
+        if used >= budget:
+            raise RateLimitedError(
+                f"Daily token budget exceeded for {feature}.",
+                retry_after=_seconds_until_next_utc_midnight(now),
+            )
 
     return _dependency
 

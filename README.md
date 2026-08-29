@@ -34,7 +34,6 @@ Each tutor turn is retrieval-augmented and deliberately narrow — one LLM call,
 | GET | `/api/v1/papers/{paper_id}/questions` | ✓ | List a paper's questions (no answers) |
 | POST | `/api/v1/attempts` | ✓ | Submit answers for a paper; scored immediately |
 | POST | `/api/v1/questions/{question_id}/tutor` | ✓ | Send a message to that question's grounded AI tutor |
-| GET | `/api/v1/questions/{question_id}/tutor/history` | ✓ | This user's prior tutor turns for that question |
 | POST | `/api/v1/admin/documents` | ✓ | Upload a syllabus PDF (ingested into ChromaDB) |
 | GET | `/api/v1/admin/documents` | ✓ | List uploaded syllabus documents |
 | DELETE | `/api/v1/admin/documents/{document_id}` | ✓ | Remove a syllabus document + its chunks |
@@ -53,3 +52,32 @@ Each tutor turn is retrieval-augmented and deliberately narrow — one LLM call,
 | GET | `/api/v1/tools` | ✓ | List tool definitions available to the model (introspection only) |
 
 `✓` = requires a bearer access token from `/api/v1/auth/login`.
+
+## How to run the program
+
+The app has two parts: the FastAPI **backend** (`app/`, this repo root) and the Next.js **frontend** (`web/`).
+
+### Backend
+
+**Option A — Docker Compose (recommended):** brings up Postgres (pgvector), Redis, ChromaDB, runs Alembic migrations, then starts the API.
+
+1. Fill in `.env` at the repo root (`ANTHROPIC_API_KEY`, `JWT_SECRET_KEY`, etc. — see the keys already listed there).
+2. `docker compose up --build`
+3. API is live at `http://localhost:8000` — check `http://localhost:8000/healthz` and `http://localhost:8000/readyz`.
+
+**Option B — run locally with `uv`:**
+
+1. Install deps: `uv sync`
+2. Start the datastores (or point `.env` at your own): `docker compose up postgres redis chromadb`
+3. Run migrations: `uv run alembic upgrade head`
+4. Start the API with reload: `uv run uvicorn app.main:app --reload --port 8000`
+
+### Frontend
+
+1. `cd web`
+2. `npm install`
+3. Set `web/.env.local` (`BACKEND_URL` pointing at the API, e.g. `http://localhost:8000`, plus `DEMO_NICKNAME` / `DEMO_PASSWORD`)
+4. `npm run dev`
+5. Open `http://localhost:3000`
+
+The frontend expects the backend to already be running at `BACKEND_URL`.

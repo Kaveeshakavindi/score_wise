@@ -12,53 +12,26 @@ function mapCitations(citations: BackendCitation[] | null | undefined) {
   }));
 }
 
-// GET /api/tutor?questionId=... — loads this student's existing tutor thread
-// for the question (GET /api/v1/questions/{id}/tutor/history). The practice
-// page calls this before auto-sending its opener message, so reopening the
-// panel (e.g. after a page refresh) shows the ongoing conversation instead
-// of appending a duplicate opener to the permanent backend thread — tutor
-// threads have no session/reset concept, they're one thread per question
-// forever, so client-side de-duping is what keeps them from padding
-// themselves with repeats.
-export async function GET(request: Request) {
-  const questionId = new URL(request.url).searchParams.get("questionId");
+// POST /api/tutor — proxies to the question-scoped AI tutor feedback
+// endpoint (POST /api/v1/questions/{id}/tutor). Idempotent per exact
+// (question, student, selectedAnswer) on the backend: asking again about the
+// same recorded answer returns the same cached explanation instead of
+// re-paying for an LLM call, but a different selectedAnswer (e.g. a retake)
+// always generates a fresh one — it's never stuck showing feedback for an
+// answer the student no longer has selected.
+export async function POST(request: Request) {
+  const { questionId, selectedAnswer } = await request.json();
   if (!questionId) {
     return NextResponse.json({ error: "questionId is required." }, { status: 400 });
-  }
-
-  const res = await backendFetch(`/api/v1/questions/${questionId}/tutor/history`);
-  if (!res.ok) {
-    return NextResponse.json({ error: `Tutor history request failed (${res.status})` }, { status: 502 });
-  }
-
-  const messages = (await res.json()) as { role: "user" | "assistant"; content: string; citations: BackendCitation[] | null }[];
-  return NextResponse.json({
-    messages: messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-      citations: mapCitations(m.citations),
-    })),
-  });
-}
-
-// POST /api/tutor — proxies one chat turn to the question-scoped AI tutor
-// (POST /api/v1/questions/{id}/tutor). Surfaced from the "Ask AI Tutor"
-// button shown alongside a wrong-answer result on the practice page.
-export async function POST(request: Request) {
-  const { questionId, content, selectedAnswer } = await request.json();
-  if (!questionId || typeof content !== "string" || !content.trim()) {
-    return NextResponse.json({ error: "questionId and content are required." }, { status: 400 });
   }
 
   const res = await backendFetch(`/api/v1/questions/${questionId}/tutor`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      content,
-      // Only meaningful on the opening turn — lets the tutor address the
-      // student's actual wrong choice instead of only explaining the
-      // correct answer in the abstract.
-      ...(typeof selectedAnswer === "number" ? { selected_answer: selectedAnswer } : {}),
+      // null (left blank) is meaningful here, not just "omitted" — it picks
+      // the backend's "missed" feedback branch instead of "wrong".
+      selected_answer: typeof selectedAnswer === "number" ? selectedAnswer : null,
     }),
   });
 
@@ -66,11 +39,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: `Tutor request failed (${res.status})` }, { status: 502 });
   }
 
-  const data = await res.json();
+  const { feedback } = await res.json();
   return NextResponse.json({
-    reply: data.assistant_message.content as string,
-    // The syllabus chunks that grounded this reply, so the UI can show them
-    // as citations proving the answer isn't unsourced.
-    citations: mapCitations(data.assistant_message.citations),
+    content: feedback.content as string,
+    isCorrect: feedback.is_correct as boolean | null,
+    // The syllabus chunks that grounded this feedback, so the UI can show
+    // them as citations proving the explanation isn't unsourced.
+    citations: mapCitations(feedback.citations),
+    // Real usage from the call that generated this explanation, and its
+    // estimated dollar cost — null until app/llm/pricing.py has real rates
+    // for the current model, so the UI just omits the cost line then rather
+    // than showing a fabricated $0.00.
+    inputTokens: feedback.input_tokens as number | null,
+    outputTokens: feedback.output_tokens as number | null,
+    estimatedCostUsd: feedback.estimated_cost_usd as number | null,
   });
 }

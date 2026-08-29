@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class RegisterRequest(BaseModel):
@@ -12,6 +12,7 @@ class RegisterRequest(BaseModel):
     nickname: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_]+$")
     password: str = Field(min_length=8, max_length=128)
     age: int = Field(ge=13, le=120)
+    email: EmailStr
 
 
 class UserPublic(BaseModel):
@@ -19,6 +20,7 @@ class UserPublic(BaseModel):
     name: str
     nickname: str
     age: int
+    email: str | None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -33,3 +35,12 @@ class TokenPair(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8, max_length=128)

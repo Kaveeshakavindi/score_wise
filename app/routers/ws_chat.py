@@ -13,6 +13,7 @@ from app.core.logging import logger, set_session_id, set_user_id
 from app.core.security import decode_access_token
 from app.db.base import get_session_factory
 from app.db.models import User
+from app.repositories.llm_usage_repository import LlmUsageRepository
 from app.repositories.message_repository import MessageRepository
 from app.repositories.rag_chunk_repository import RagChunkRepository
 from app.repositories.session_repository import SessionRepository
@@ -106,7 +107,8 @@ async def stream_chat(websocket: WebSocket, session_id: UUID) -> None:
                         ToolInvocationRepository(db),
                         settings,
                     ),
-                    TitleService(settings),
+                    TitleService(settings, LlmUsageRepository(db)),
+                    LlmUsageRepository(db),
                     settings,
                 )
                 try:
