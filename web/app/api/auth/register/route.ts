@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { extractBackendError } from "@/lib/backend";
+import { extractBackendError, safeFetch } from "@/lib/backend";
 
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8000";
 
@@ -22,7 +22,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Name, nickname, password, age, and email are required." }, { status: 400 });
   }
 
-  const registerRes = await fetch(`${BACKEND_URL}/api/v1/auth/register`, {
+  const registerRes = await safeFetch(`${BACKEND_URL}/api/v1/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, nickname, password, age, email }),

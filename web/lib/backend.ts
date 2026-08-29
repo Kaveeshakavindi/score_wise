@@ -8,6 +8,28 @@ import { clearSessionCookies, getAccessToken, getRefreshToken, setSessionCookies
 
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8000";
 
+/** Drop-in replacement for fetch() that never throws. A network-level
+ * failure (BACKEND_URL unset/unreachable, DNS failure, ...) previously
+ * propagated as an uncaught exception out of the route handler, which
+ * Next.js turns into a bare, bodyless 500 — indistinguishable from a real
+ * server bug and impossible to debug from the client. This converts that
+ * into a synthetic Response matching the backend's own error envelope shape
+ * (app/core/exceptions.py's `{ error: { code, message } }`), so callers —
+ * including extractBackendError below, which already expects that shape —
+ * don't need a separate code path for "the fetch itself failed" versus "the
+ * backend responded with an error status". */
+export async function safeFetch(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return new Response(
+      JSON.stringify({ error: { code: "upstream_unreachable", message: `Could not reach the backend: ${detail}` } }),
+      { status: 502, headers: { "Content-Type": "application/json" } },
+    );
+  }
+}
+
 /** Unwraps the backend's error envelope (app/core/exceptions.py's
  * `{ error: { code, message, details, request_id } }`) into a plain message
  * string, so routes that need to surface a real reason (login/register) don't
@@ -28,7 +50,7 @@ async function refreshAccessToken(): Promise<string | null> {
   const refreshToken = getRefreshToken();
   if (!refreshToken) return null;
 
-  const res = await fetch(`${BACKEND_URL}/api/v1/auth/refresh`, {
+  const res = await safeFetch(`${BACKEND_URL}/api/v1/auth/refresh`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refresh_token: refreshToken }),
@@ -53,7 +75,7 @@ async function refreshAccessToken(): Promise<string | null> {
  * /login. */
 export async function backendFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const attempt = (token: string | null) =>
-    fetch(`${BACKEND_URL}${path}`, {
+    safeFetch(`${BACKEND_URL}${path}`, {
       ...init,
       headers: { ...init.headers, ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       cache: "no-store",
